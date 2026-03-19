@@ -42,8 +42,9 @@
         /* ─── BOTÓN FLOTANTE ─── */
         #chat-launcher {
             position: fixed;
-            bottom: 20px;
-            left: 20px;
+            top: 42%;
+            right: 20px;
+            transform: translateY(-42%);
             width: 50px;
             height: 50px;
             background: var(--naranja);
@@ -54,13 +55,13 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            transition: transform 0.25s cubic-bezier(.34, 1.56, .64, 1), background 0.2s;
+            transition: background 0.2s;
             z-index: 9999;
         }
 
         #chat-launcher:hover {
             background: var(--naranja-hover);
-            transform: scale(1.08);
+            transform: translateY(-42%) scale(1.08);
         }
 
         #chat-launcher svg {
@@ -70,8 +71,9 @@
         /* ─── VENTANA CHAT ─── */
         #chat-window {
             position: fixed;
-            bottom: 90px;
-            left: 20px;
+            top: 42%;
+            right: 80px;
+            transform: translateY(-42%);
             width: 300px;
             max-height: 420px;
             background: var(--blanco);
@@ -81,14 +83,12 @@
             flex-direction: column;
             overflow: hidden;
             z-index: 9998;
-            transform: translateY(0) scale(1);
             opacity: 1;
             pointer-events: all;
-            transition: transform 0.3s cubic-bezier(.34, 1.56, .64, 1), opacity 0.25s ease;
+            transition: opacity 0.25s ease;
         }
 
         #chat-window.hidden {
-            transform: translateY(20px) scale(0.96);
             opacity: 0;
             pointer-events: none;
         }
@@ -282,7 +282,7 @@
             text-align: right;
         }
 
-        /* Typing indicator */
+        /* Texto "pista" (escribiendo...) */
         .typing {
             display: flex;
             align-items: center;
@@ -388,7 +388,7 @@
 <body>
 
     <!-- BOTÓN FLOTANTE -->
-    <button id="chat-launcher" aria-label="Abrir chat">
+    <button id="chat-launcher" aria-label="Abrir chat" onclick="toggleChat()">
         <!-- Icono chat -->
         <svg id="icon-chat" width="26" height="26" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M20 2H4C2.9 2 2 2.9 2 4V22L6 18H20C21.1 18 22 17.1 22 16V4C22 2.9 21.1 2 20 2Z" fill="white" />
@@ -396,7 +396,7 @@
     </button>
 
     <!-- VENTANA CHAT -->
-    <div id="chat-window" role="dialog" aria-label="Chat de soporte">
+    <div id="chat-window" class="hidden" role="dialog" aria-label="Chat de soporte">
 
         <!-- HEADER -->
         <div class="chat-header">
@@ -413,7 +413,7 @@
             <div class="header-info">
                 <div class="nombre">Búsqueda</div>
             </div>
-            <button class="btn-cerrar" id="btn-cerrar" aria-label="Cerrar chat">
+            <button class="btn-cerrar" id="btn-cerrar" aria-label="Cerrar chat" onclick="cerrarChat()">
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                     <path d="M1 1L13 13M13 1L1 13" stroke="white" stroke-width="2" stroke-linecap="round" />
                 </svg>
@@ -452,64 +452,57 @@
     </div>
 
     <script>
-        window.addEventListener('load', function () {
-            var launcher = document.getElementById('chat-launcher');
-            var chatWindow = document.getElementById('chat-window');
-            var btnCerrar = document.getElementById('btn-cerrar');
-            var mensajesEl = document.getElementById('chat-mensajes');
-            var inputEl = document.getElementById('chat-input');
-            var btnEnviar = document.getElementById('btn-enviar');
+        setTimeout(function () {
+
+            document.getElementById('hora-bienvenida').textContent = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
 
             function horaActual() {
                 return new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
             }
-            document.getElementById('hora-bienvenida').textContent = horaActual();
 
-            launcher.classList.add('open');
+            function agregarMensaje(texto, tipo) {
+                var mensajesEl = document.getElementById('chat-mensajes');
+                var wrap = document.createElement('div');
+                wrap.className = 'burbuja ' + tipo;
+                wrap.innerHTML = '<div><div class="burbuja-texto">' + texto + '</div><div class="burbuja-hora">' + horaActual() + '</div></div>';
+                mensajesEl.appendChild(wrap);
+                mensajesEl.scrollTop = mensajesEl.scrollHeight;
+            }
 
-            launcher.addEventListener('click', function () {
-                var estaCerrado = chatWindow.classList.toggle('hidden');
-                launcher.classList.toggle('open', !estaCerrado);
-            });
-
-            btnCerrar.addEventListener('click', function (e) {
-                e.stopPropagation();
-                chatWindow.classList.add('hidden');
-                launcher.classList.remove('open');
-            });
-
-            inputEl.addEventListener('input', function () {
+            function enviarMensaje() {
+                var inputEl = document.getElementById('chat-input');
+                var texto = inputEl.value.trim();
+                if (!texto) return;
+                agregarMensaje(texto, 'usuario');
+                inputEl.value = '';
                 inputEl.style.height = 'auto';
-                inputEl.style.height = Math.min(inputEl.scrollHeight, 80) + 'px';
-            });
+            }
 
-            inputEl.addEventListener('keydown', function (e) {
+            document.getElementById('chat-launcher').onclick = function () {
+                document.getElementById('chat-window').classList.toggle('hidden');
+            };
+
+            document.getElementById('btn-cerrar').onclick = function (e) {
+                e.stopPropagation();
+                document.getElementById('chat-window').classList.add('hidden');
+                return false;
+            };
+
+            document.getElementById('btn-enviar').onclick = enviarMensaje;
+
+            document.getElementById('chat-input').addEventListener('keydown', function (e) {
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     enviarMensaje();
                 }
             });
 
-            btnEnviar.addEventListener('click', enviarMensaje);
+            document.getElementById('chat-input').addEventListener('input', function () {
+                this.style.height = 'auto';
+                this.style.height = Math.min(this.scrollHeight, 80) + 'px';
+            });
 
-            function agregarMensaje(texto, tipo) {
-                var hora = horaActual();
-                var wrap = document.createElement('div');
-                wrap.className = 'burbuja ' + tipo;
-                wrap.innerHTML = '<div><div class="burbuja-texto">' + texto + '</div><div class="burbuja-hora">' + hora + '</div></div>';
-                mensajesEl.appendChild(wrap);
-                mensajesEl.scrollTop = mensajesEl.scrollHeight;
-            }
-
-            function enviarMensaje() {
-                var texto = inputEl.value.trim();
-                if (!texto) return;
-                agregarMensaje(texto, 'usuario');
-                inputEl.value = '';
-                inputEl.style.height = 'auto';
-                // Aquí se conectará la IA próximamente
-            }
-        });
+        }, 500);
     </script>
 </body>
 
