@@ -42,10 +42,10 @@
         /* ─── BOTÓN FLOTANTE ─── */
         #chat-launcher {
             position: fixed;
-            bottom: 28px;
-            left: 28px;
-            width: 60px;
-            height: 60px;
+            bottom: 20px;
+            left: 20px;
+            width: 50px;
+            height: 50px;
             background: var(--naranja);
             border-radius: 50%;
             border: none;
@@ -70,10 +70,10 @@
         /* ─── VENTANA CHAT ─── */
         #chat-window {
             position: fixed;
-            bottom: 104px;
-            left: 28px;
-            width: 370px;
-            max-height: 560px;
+            bottom: 90px;
+            left: 20px;
+            width: 300px;
+            max-height: 420px;
             background: var(--blanco);
             border-radius: var(--radio);
             box-shadow: var(--sombra);
@@ -191,8 +191,8 @@
             flex-direction: column;
             gap: 12px;
             background: var(--gris-claro);
-            min-height: 280px;
-            max-height: 340px;
+            min-height: 200px;
+            max-height: 260px;
         }
 
         .chat-mensajes::-webkit-scrollbar {
@@ -452,69 +452,64 @@
     </div>
 
     <script>
-        const launcher = document.getElementById('chat-launcher');
-        const chatWindow = document.getElementById('chat-window');
-        const btnCerrar = document.getElementById('btn-cerrar');
-        const mensajesEl = document.getElementById('chat-mensajes');
-        const inputEl = document.getElementById('chat-input');
-        const btnEnviar = document.getElementById('btn-enviar');
+        window.addEventListener('load', function () {
+            var launcher = document.getElementById('chat-launcher');
+            var chatWindow = document.getElementById('chat-window');
+            var btnCerrar = document.getElementById('btn-cerrar');
+            var mensajesEl = document.getElementById('chat-mensajes');
+            var inputEl = document.getElementById('chat-input');
+            var btnEnviar = document.getElementById('btn-enviar');
 
-        // Hora actual
-        function horaActual() {
-            return new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-        }
-        document.getElementById('hora-bienvenida').textContent = horaActual();
+            function horaActual() {
+                return new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+            }
+            document.getElementById('hora-bienvenida').textContent = horaActual();
 
-        // El chat empieza abierto
-        launcher.classList.add('open');
+            launcher.classList.add('open');
 
-        // Abrir / cerrar
-        launcher.addEventListener('click', () => {
-            const estaCerrado = chatWindow.classList.toggle('hidden');
-            launcher.classList.toggle('open', !estaCerrado);
-        });
-        btnCerrar.addEventListener('click', () => {
-            chatWindow.classList.add('hidden');
-            launcher.classList.remove('open');
-        });
+            launcher.addEventListener('click', function () {
+                var estaCerrado = chatWindow.classList.toggle('hidden');
+                launcher.classList.toggle('open', !estaCerrado);
+            });
 
-        // Auto-resize textarea
-        inputEl.addEventListener('input', () => {
-            inputEl.style.height = 'auto';
-            inputEl.style.height = Math.min(inputEl.scrollHeight, 80) + 'px';
-        });
+            btnCerrar.addEventListener('click', function (e) {
+                e.stopPropagation();
+                chatWindow.classList.add('hidden');
+                launcher.classList.remove('open');
+            });
 
-        // Enter para enviar (Shift+Enter = salto de línea)
-        inputEl.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                enviarMensaje();
+            inputEl.addEventListener('input', function () {
+                inputEl.style.height = 'auto';
+                inputEl.style.height = Math.min(inputEl.scrollHeight, 80) + 'px';
+            });
+
+            inputEl.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    enviarMensaje();
+                }
+            });
+
+            btnEnviar.addEventListener('click', enviarMensaje);
+
+            function agregarMensaje(texto, tipo) {
+                var hora = horaActual();
+                var wrap = document.createElement('div');
+                wrap.className = 'burbuja ' + tipo;
+                wrap.innerHTML = '<div><div class="burbuja-texto">' + texto + '</div><div class="burbuja-hora">' + hora + '</div></div>';
+                mensajesEl.appendChild(wrap);
+                mensajesEl.scrollTop = mensajesEl.scrollHeight;
+            }
+
+            function enviarMensaje() {
+                var texto = inputEl.value.trim();
+                if (!texto) return;
+                agregarMensaje(texto, 'usuario');
+                inputEl.value = '';
+                inputEl.style.height = 'auto';
+                // Aquí se conectará la IA próximamente
             }
         });
-        btnEnviar.addEventListener('click', enviarMensaje);
-
-        function agregarMensaje(texto, tipo) {
-            const hora = horaActual();
-            const wrap = document.createElement('div');
-            wrap.className = `burbuja ${tipo}`;
-            wrap.innerHTML = `
-      <div>
-        <div class="burbuja-texto">${texto}</div>
-        <div class="burbuja-hora">${hora}</div>
-      </div>`;
-            mensajesEl.appendChild(wrap);
-            mensajesEl.scrollTop = mensajesEl.scrollHeight;
-        }
-
-        function enviarMensaje() {
-            const texto = inputEl.value.trim();
-            if (!texto) return;
-
-            agregarMensaje(texto, 'usuario');
-            inputEl.value = '';
-            inputEl.style.height = 'auto';
-            // Aquí se conectará la IA próximamente
-        }
     </script>
 </body>
 
