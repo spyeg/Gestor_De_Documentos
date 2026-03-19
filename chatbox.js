@@ -1,4 +1,8 @@
 (function () {
+    // Conexion api gemini
+    const API_KEY = "";//falta meter api key
+    const URL_API = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`;
+
     const obtenerHora = () => new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
 
     const initChat = () => {
@@ -23,18 +27,46 @@
             windowChat.classList.add('hidden');
         };
 
-        const enviar = () => {
+        // Función para que el bot agregue su "bocadillo"
+        const agregarRespuestaBot = (texto) => {
+            let msg = document.createElement('div');
+            msg.className = 'burbuja bot';
+            msg.innerHTML = `<div><div class="burbuja-texto">${texto}</div><div class="burbuja-hora">${obtenerHora()}</div></div>`;
+            mensajesEl.appendChild(msg);
+            mensajesEl.scrollTop = mensajesEl.scrollHeight;
+        };
+
+        const enviar = async () => {
             let txt = inputEl.value.trim();
             if (!txt) return;
 
             let msg = document.createElement('div');
             msg.className = 'burbuja usuario';
-            // Se añade la hora debajo del texto
             msg.innerHTML = `<div><div class="burbuja-texto">${txt}</div><div class="burbuja-hora">${obtenerHora()}</div></div>`;
             mensajesEl.appendChild(msg);
 
             inputEl.value = '';
             mensajesEl.scrollTop = mensajesEl.scrollHeight;
+
+            // Llamada de la api de gemini a cliente
+            try {
+                const response = await fetch(URL_API, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: txt }] }]
+                    })
+                });
+
+                const data = await response.json();
+                if (data.candidates && data.candidates[0].content.parts[0].text) {
+                    const respuestaIA = data.candidates[0].content.parts[0].text;
+                    agregarRespuestaBot(respuestaIA);
+                }
+            } catch (error) {
+                console.error("Error:", error);
+                agregarRespuestaBot("No se ha podido conectar con la IA");
+            }
         };
 
         if (btnEnviar) btnEnviar.onclick = enviar;

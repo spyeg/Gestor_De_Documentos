@@ -166,3 +166,12 @@
     align-items: center;
     justify-content: center;
 }
+
+.burbuja-texto {
+    max-width: 85%;
+    padding: 8px 12px;
+    border-radius: 12px;
+    font-size: 13px;
+    font-family: 'DM Sans', sans-serif;
+    white-space: pre-wrap;
+}
