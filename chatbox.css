@@ -29,6 +29,47 @@
     transition: transform 0.2s;
 }
 
+/* Tooltip al hacer hover sobre el botón lanzador */
+#chat-launcher::before {
+    content: attr(title);
+    position: absolute;
+    right: 60px;
+    background: var(--azul);
+    color: white;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 6px 10px;
+    border-radius: 8px;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+    box-shadow: 0 4px 12px rgba(13, 27, 62, 0.2);
+}
+
+#chat-launcher::after {
+    content: '';
+    position: absolute;
+    right: 54px;
+    border: 5px solid transparent;
+    border-left-color: var(--azul);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+}
+
+#chat-launcher:hover::before,
+#chat-launcher:hover::after {
+    opacity: 1;
+}
+
+/* Ocultar tooltip cuando el chat está abierto */
+#chat-launcher.chat-abierto::before,
+#chat-launcher.chat-abierto::after {
+    opacity: 0 !important;
+}
+
 #chat-window {
     position: fixed;
     top: 42%;
@@ -53,7 +94,7 @@
 
 .chat-header {
     background: linear-gradient(135deg, var(--azul) 0%, var(--azul-mid) 60%, #2A4080 100%);
-    padding: 18px;
+    padding: 14px 18px;
     display: flex;
     align-items: center;
     gap: 12px;
@@ -67,6 +108,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    flex-shrink: 0;
 }
 
 .nombre {
@@ -76,14 +118,13 @@
     color: white;
 }
 
-.btn-cerrar {
-    background: none;
-    border: none;
-    color: white;
-    cursor: pointer;
+.header-acciones {
     margin-left: auto;
-    font-size: 20px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
 }
+
 
 .chat-mensajes {
     flex: 1;
@@ -110,6 +151,7 @@
     border-radius: 12px;
     font-size: 13px;
     font-family: 'DM Sans', sans-serif;
+    white-space: pre-wrap;
 }
 
 .burbuja.bot .burbuja-texto {
@@ -124,7 +166,6 @@
     border-bottom-right-radius: 4px;
 }
 
-/* Estilo para la hora */
 .burbuja-hora {
     font-size: 10px;
     color: #9CA3AF;
@@ -134,6 +175,62 @@
 
 .burbuja.usuario .burbuja-hora {
     text-align: right;
+}
+
+.btn-copiar {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px 4px;
+    margin-top: 2px;
+    opacity: 0.4;
+    transition: opacity 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 10px;
+    font-family: 'DM Sans', sans-serif;
+    color: #6B7280;
+}
+
+.btn-copiar:hover {
+    opacity: 1;
+}
+
+#typing-indicator .burbuja-texto {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    padding: 10px 14px;
+}
+
+.typing-dot {
+    width: 7px;
+    height: 7px;
+    background: var(--naranja);
+    border-radius: 50%;
+    animation: bounce 1s infinite;
+}
+
+.typing-dot:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.typing-dot:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
+@keyframes bounce {
+
+    0%,
+    80%,
+    100% {
+        transform: translateY(0);
+    }
+
+    40% {
+        transform: translateY(-6px);
+    }
 }
 
 .chat-footer {
@@ -152,6 +249,7 @@
     outline: none;
     resize: none;
     font-size: 13px;
+    font-family: 'DM Sans', sans-serif;
 }
 
 .btn-enviar {
@@ -165,13 +263,104 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.2s, opacity 0.2s;
 }
 
-.burbuja-texto {
-    max-width: 85%;
-    padding: 8px 12px;
-    border-radius: 12px;
-    font-size: 13px;
+.btn-enviar.enviando {
+    opacity: 0.5;
+    cursor: not-allowed;
+    animation: pulso 1s infinite;
+}
+
+@keyframes pulso {
+
+    0%,
+    100% {
+        opacity: 0.5;
+    }
+
+    50% {
+        opacity: 0.3;
+    }
+}
+
+.btn-cerrar {
+    background: none;
+    border: none;
+    color: white;
+    cursor: pointer;
+    font-size: 20px;
+    line-height: 1;
+    padding: 4px 8px;
+    margin: -4px -8px;
+    border-radius: 6px;
+    transition: background 0.2s;
+}
+
+.btn-cerrar:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.chat-footer-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+}
+
+#char-contador {
+    font-size: 10px;
     font-family: 'DM Sans', sans-serif;
-    white-space: pre-wrap;
+    color: #9CA3AF;
+    text-align: right;
+    transition: color 0.2s;
+}
+
+#char-contador.limite-cerca {
+    color: #F59E0B;
+}
+
+#char-contador.limite-maximo {
+    color: #EF4444;
+    font-weight: 600;
+}
+
+.md-content strong {
+    font-weight: 700;
+}
+
+.md-content em {
+    font-style: italic;
+}
+
+.md-content ul {
+    margin: 4px 0;
+    padding-left: 16px;
+}
+
+.md-content li {
+    margin-bottom: 2px;
+}
+
+.md-content code {
+    background: rgba(13, 27, 62, 0.08);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-family: monospace;
+    font-size: 12px;
+}
+
+.md-content pre {
+    background: rgba(13, 27, 62, 0.06);
+    border-radius: 6px;
+    padding: 8px;
+    overflow-x: auto;
+    margin: 4px 0;
+}
+
+.md-content pre code {
+    background: none;
+    padding: 0;
+    font-size: 11px;
 }

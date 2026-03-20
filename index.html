@@ -12,9 +12,20 @@
 
 <body>
 
-    <button id="chat-launcher" aria-label="Abrir chat">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
-            <path d="M20 2H4C2.9 2 2 2.9 2 4V22L6 18H20C21.1 18 22 17.1 22 16V4C22 2.9 21.1 2 20 2Z" />
+    <button id="chat-launcher" aria-label="Asistente Virtual Couce Consulting"
+        title="Asistente Virtual Couce Consulting">
+        <svg width="34" height="34" viewBox="0 0 32 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Imagen robot -->
+            <line x1="16" y1="0" x2="16" y2="4" stroke="white" stroke-width="2" stroke-linecap="round" />
+            <circle cx="16" cy="0" r="1.5" fill="white" />
+            <rect x="5" y="4" width="22" height="15" rx="4" fill="white" />
+            <circle cx="11" cy="11" r="3" fill="#FF6B2B" />
+            <circle cx="21" cy="11" r="3" fill="#FF6B2B" />
+            <circle cx="11" cy="11" r="1.2" fill="white" />
+            <circle cx="21" cy="11" r="1.2" fill="white" />
+            <rect x="10" y="15" width="12" height="2" rx="1" fill="#FF6B2B" />
+            <rect x="2" y="8" width="3" height="5" rx="1.5" fill="white" opacity="0.7" />
+            <rect x="27" y="8" width="3" height="5" rx="1.5" fill="white" opacity="0.7" />
         </svg>
     </button>
 
@@ -25,7 +36,9 @@
                         d="M12 2C6.48 2 2 6.48 2 12C2 14.2 2.74 16.23 4 17.87V22L8.1 20.26C9.31 20.73 10.63 21 12 21C17.52 21 22 16.52 22 11C22 6.48 17.52 2 12 2Z" />
                 </svg></div>
             <div class="nombre">Asistente</div>
-            <button class="btn-cerrar" id="btn-cerrar">×</button>
+            <div class="header-acciones">
+                <button class="btn-cerrar" id="btn-cerrar">×</button>
+            </div>
         </div>
         <div class="chat-mensajes" id="chat-mensajes">
             <div class="burbuja bot">
@@ -36,7 +49,11 @@
             </div>
         </div>
         <div class="chat-footer">
-            <textarea class="chat-input" id="chat-input" placeholder="Escribe..." rows="1"></textarea>
+            <div class="chat-footer-inner">
+                <textarea class="chat-input" id="chat-input" placeholder="Escribe..." rows="1"
+                    maxlength="500"></textarea>
+                <span id="char-contador">0/500</span>
+            </div>
             <button class="btn-enviar" id="btn-enviar">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
                     <path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13" />

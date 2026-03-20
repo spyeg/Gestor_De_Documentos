@@ -1,9 +1,38 @@
 (function () {
-    // Conexion api gemini
-    const API_KEY = "";//falta meter api key
-    const URL_API = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`;
+    //Conexión api gemini
+    const API_KEY = "";//meter api key de gemini
+    const URL_API = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + API_KEY;
+    //Instrucción a gemini
+    const SISTEMA = "Eres un asistente interno de Couce Consulting. Responde siempre en español, de forma profesional y concisa. Si no sabes algo, dilo honestamente.";
+
+    //Límite de historial para no gastar tokens innecesarios
+    const MAX_HISTORIAL = 10;
+    //Límite máximo de caracteres por mensaje
+    const MAX_CHARS = 500;
+
+    let historial = [];
 
     const obtenerHora = () => new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+
+    //Renderizar básico (negrita, cursiva, listas, código)
+    const renderMarkdown = (texto) => {
+        return texto
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
+            .replace(/`([^`]+)`/g, '<code>$1</code>')
+            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.+?)\*/g, '<em>$1</em>')
+            .replace(/^[-•] (.+)/gm, '<li>$1</li>')
+            .replace(/(<li>[\s\S]*<\/li>)/g, '<ul>$1</ul>')
+            .replace(/\n/g, '<br>');
+    };
+
+    //Sanitizar texto del usuario para evitar XSS
+    const sanitizar = (texto) => {
+        const div = document.createElement('div');
+        div.textContent = texto;
+        return div.innerHTML;
+    };
 
     const initChat = () => {
         const launcher = document.getElementById('chat-launcher');
@@ -13,59 +42,152 @@
         const inputEl = document.getElementById('chat-input');
         const mensajesEl = document.getElementById('chat-mensajes');
         const hBienvenida = document.getElementById('hora-bienvenida');
+        //Elemento contador de caracteres
+        const contadorEl = document.getElementById('char-contador');
 
         if (hBienvenida) hBienvenida.textContent = obtenerHora();
         if (!launcher || !windowChat) return;
 
+        // Abrir y cerrar
         launcher.onclick = (e) => {
             e.preventDefault();
-            windowChat.classList.toggle('hidden');
+            const abierto = windowChat.classList.toggle('hidden');
+            launcher.classList.toggle('chat-abierto', !abierto);
+            if (!abierto) inputEl.focus();
         };
-
         btnCerrar.onclick = (e) => {
             e.preventDefault();
             windowChat.classList.add('hidden');
+            launcher.classList.remove('chat-abierto');
         };
 
-        // Función para que el bot agregue su "bocadillo"
+
+
+        //Auto-resize del textarea al escribir
+        inputEl.addEventListener('input', () => {
+            inputEl.style.height = 'auto';
+            inputEl.style.height = Math.min(inputEl.scrollHeight, 100) + 'px';
+            //Actualizar contador de caracteres
+            const len = inputEl.value.length;
+            if (contadorEl) {
+                contadorEl.textContent = `${len}/${MAX_CHARS}`;
+                contadorEl.classList.toggle('limite-cerca', len >= MAX_CHARS * 0.85);
+                contadorEl.classList.toggle('limite-maximo', len >= MAX_CHARS);
+            }
+            btnEnviar.disabled = len > MAX_CHARS;
+        });
+
+        // Puntos de pensando respuesta
+        const mostrarTyping = () => {
+            const div = document.createElement('div');
+            div.className = 'burbuja bot';
+            div.id = 'typing-indicator';
+            div.innerHTML = `<div><div class="burbuja-texto">
+                <span class="typing-dot"></span>
+                <span class="typing-dot"></span>
+                <span class="typing-dot"></span>
+            </div></div>`;
+            mensajesEl.appendChild(div);
+            mensajesEl.scrollTop = mensajesEl.scrollHeight;
+        };
+        const ocultarTyping = () => {
+            const el = document.getElementById('typing-indicator');
+            if (el) el.remove();
+        };
+
+        // Burbuja bot con botón copiar y markdown renderizado
         const agregarRespuestaBot = (texto) => {
-            let msg = document.createElement('div');
-            msg.className = 'burbuja bot';
-            msg.innerHTML = `<div><div class="burbuja-texto">${texto}</div><div class="burbuja-hora">${obtenerHora()}</div></div>`;
-            mensajesEl.appendChild(msg);
+            const div = document.createElement('div');
+            div.className = 'burbuja bot';
+            //Renderizar en respuestas del bot
+            div.innerHTML = `<div>
+                <div class="burbuja-texto md-content">${renderMarkdown(texto)}</div>
+                <div style="display:flex;align-items:center;gap:6px;">
+                    <div class="burbuja-hora">${obtenerHora()}</div>
+                    <button class="btn-copiar">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                        Copiar
+                    </button>
+                </div>
+            </div>`;
+            div.querySelector('.btn-copiar').onclick = function () {
+                navigator.clipboard.writeText(texto).then(() => {
+                    this.textContent = '✓ Copiado';
+                    setTimeout(() => {
+                        this.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copiar`;
+                    }, 2000);
+                });
+            };
+            mensajesEl.appendChild(div);
             mensajesEl.scrollTop = mensajesEl.scrollHeight;
         };
 
+        // Enviar mensaje
         const enviar = async () => {
-            let txt = inputEl.value.trim();
-            if (!txt) return;
+            const txt = inputEl.value.trim();
+            if (!txt || txt.length > MAX_CHARS) return;
 
-            let msg = document.createElement('div');
-            msg.className = 'burbuja usuario';
-            msg.innerHTML = `<div><div class="burbuja-texto">${txt}</div><div class="burbuja-hora">${obtenerHora()}</div></div>`;
-            mensajesEl.appendChild(msg);
+            const msgDiv = document.createElement('div');
+            msgDiv.className = 'burbuja usuario';
+            //Sanitizar input del usuario antes de mostrarlo
+            msgDiv.innerHTML = `<div><div class="burbuja-texto">${sanitizar(txt)}</div><div class="burbuja-hora">${obtenerHora()}</div></div>`;
+            mensajesEl.appendChild(msgDiv);
 
+            //Resetear altura del textarea tras enviar
             inputEl.value = '';
+            inputEl.style.height = 'auto';
+            if (contadorEl) {
+                contadorEl.textContent = `0/${MAX_CHARS}`;
+                contadorEl.classList.remove('limite-cerca', 'limite-maximo');
+            }
             mensajesEl.scrollTop = mensajesEl.scrollHeight;
 
-            // Llamada de la api de gemini a cliente
+            historial.push({ role: "user", parts: [{ text: txt }] });
+
+            //Recortar historial para mantener solo los últimos mensajes
+            if (historial.length > MAX_HISTORIAL) {
+                historial = historial.slice(historial.length - MAX_HISTORIAL);
+            }
+
+            mostrarTyping();
+            //Estado de carga en el botón enviar, bloquear input también
+            btnEnviar.disabled = true;
+            btnEnviar.classList.add('enviando');
+            inputEl.disabled = true;
+            inputEl.style.opacity = '0.5';
+
             try {
                 const response = await fetch(URL_API, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        contents: [{ parts: [{ text: txt }] }]
+                        system_instruction: { parts: [{ text: SISTEMA }] },
+                        contents: historial
                     })
                 });
 
                 const data = await response.json();
-                if (data.candidates && data.candidates[0].content.parts[0].text) {
-                    const respuestaIA = data.candidates[0].content.parts[0].text;
-                    agregarRespuestaBot(respuestaIA);
+                ocultarTyping();
+
+                if (data.candidates && data.candidates[0]?.content?.parts[0]?.text) {
+                    const respuesta = data.candidates[0].content.parts[0].text;
+                    historial.push({ role: "model", parts: [{ text: respuesta }] });
+                    agregarRespuestaBot(respuesta);
+                } else {
+                    const errorMsg = data.error?.message || "No se pudo obtener respuesta.";
+                    agregarRespuestaBot(`⚠️ ${errorMsg}`);
                 }
             } catch (error) {
+                ocultarTyping();
                 console.error("Error:", error);
-                agregarRespuestaBot("No se ha podido conectar con la IA");
+                agregarRespuestaBot("❌ No se ha podido conectar con la IA.");
+            } finally {
+                //Restaurar botón enviar e input tras respuesta
+                btnEnviar.disabled = false;
+                btnEnviar.classList.remove('enviando');
+                inputEl.disabled = false;
+                inputEl.style.opacity = '1';
+                inputEl.focus();
             }
         };
 
