@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Cargador de documentos RAG</title>
+    <!-- PDF.js para leer PDFs en el navegador -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <style>
+        body {
+            font-family: sans-serif;
+            max-width: 620px;
+            margin: 40px auto;
+            padding: 20px;
+        }
+
+        h2 {
+            color: #0D1B3E;
+        }
+
+        .zona-archivo {
+            border: 2px dashed #ccc;
+            border-radius: 10px;
+            padding: 30px;
+            text-align: center;
+            margin: 20px 0;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+
+        .zona-archivo:hover {
+            border-color: #FF6B2B;
+        }
+
+        .zona-archivo.activa {
+            border-color: #FF6B2B;
+            background: #fff5f0;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        button {
+            background: #FF6B2B;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 15px;
+            margin-top: 10px;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        #nombre-archivo {
+            margin-top: 10px;
+            font-size: 13px;
+            color: #555;
+        }
+
+        #log {
+            margin-top: 20px;
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 13px;
+            line-height: 1.8;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>Cargador de PDF — RAG</h2>
+    <p>Selecciona un PDF, lo troceará en bloques y subirá cada uno a Supabase con su embedding.</p>
+
+    <div class="zona-archivo" id="zona" onclick="document.getElementById('archivo').click()">
+        <div>📄 Haz click aquí para seleccionar un PDF</div>
+        <input type="file" id="archivo" accept=".pdf" onchange="seleccionarArchivo(this)">
+        <div id="nombre-archivo">Ningún archivo seleccionado</div>
+    </div>
+
+    <button id="btn" onclick="cargar()" disabled>Cargar en Supabase</button>
+    <div id="log">Esperando archivo...</div>
+
+    <script>
+        //Credenciales
+        const GEMINI_KEY = "";//API KEY gemini
+        const SUPABASE_URL = "";//Url supabase
+        const SUPABASE_ANON_KEY = "";//Clave anon supabase
+
+        //Configuración de PDF.js
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        //Tamaño de cada bloque de texto en caracteres
+        const TAMANO_BLOQUE = 800;
+
+        let archivoSeleccionado = null;
+
+        const log = (msg) => {
+            const el = document.getElementById('log');
+            el.textContent += '\n' + msg;
+            el.scrollTop = el.scrollHeight;
+        };
+
+        //Cuando el usuario selecciona un archivo
+        const seleccionarArchivo = (input) => {
+            if (input.files.length === 0) return;
+            archivoSeleccionado = input.files[0];
+            document.getElementById('nombre-archivo').textContent = `✅ ${archivoSeleccionado.name}`;
+            document.getElementById('zona').classList.add('activa');
+            document.getElementById('btn').disabled = false;
+            document.getElementById('log').textContent = `Archivo listo: ${archivoSeleccionado.name}`;
+        };
+
+        //Extraer texto del PDF página a página con PDF.js
+        const extraerTextoPDF = async (archivo) => {
+            const arrayBuffer = await archivo.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            let textoCompleto = '';
+            log(`   📖 PDF cargado — ${pdf.numPages} páginas`);
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const pagina = await pdf.getPage(i);
+                const contenido = await pagina.getTextContent();
+                const textoPagina = contenido.items.map(item => item.str).join(' ');
+                textoCompleto += textoPagina + '\n';
+            }
+            return textoCompleto;
+        };
+
+        //Trocear el texto en bloques más pequeños para los embeddings
+        const trocearTexto = (texto) => {
+            const bloques = [];
+            let inicio = 0;
+            while (inicio < texto.length) {
+                let fin = inicio + TAMANO_BLOQUE;
+                //Intentar cortar por punto o salto de línea para no partir frases
+                if (fin < texto.length) {
+                    const ultimoPunto = texto.lastIndexOf('.', fin);
+                    if (ultimoPunto > inicio + 200) fin = ultimoPunto + 1;
+                }
+                const bloque = texto.slice(inicio, fin).trim();
+                if (bloque.length > 50) bloques.push(bloque);
+                inicio = fin;
+            }
+            return bloques;
+        };
+
+        //Generar embedding de un texto con Gemini
+        const generarEmbedding = async (texto) => {
+            const res = await fetch(
+                `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${GEMINI_KEY}`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: 'models/gemini-embedding-001',
+                        content: { parts: [{ text: texto }] }
+                    })
+                }
+            );
+            const data = await res.json();
+            if (!data.embedding) throw new Error(JSON.stringify(data));
+            return data.embedding.values;
+        };
+
+        //Insertar bloque en Supabase
+        const insertarDocumento = async (contenido, embedding) => {
+            const res = await fetch(`${SUPABASE_URL}/rest/v1/documentos`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'apikey': SUPABASE_ANON_KEY,
+                    'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+                    'Prefer': 'return=minimal'
+                },
+                body: JSON.stringify({ contenido, embedding: `[${embedding.join(',')}]` })
+            });
+            if (!res.ok) {
+                const err = await res.text();
+                throw new Error(err);
+            }
+        };
+
+        //Proceso principal
+        const cargar = async () => {
+            if (!archivoSeleccionado) return;
+            const btn = document.getElementById('btn');
+            btn.disabled = true;
+            document.getElementById('log').textContent = 'Iniciando carga...';
+
+            if (!GEMINI_KEY || !SUPABASE_URL || !SUPABASE_ANON_KEY) {
+                log('❌ Rellena las credenciales en el script antes de continuar.');
+                btn.disabled = false;
+                return;
+            }
+
+            try {
+                log('\n📄 Extrayendo texto del PDF...');
+                const texto = await extraerTextoPDF(archivoSeleccionado);
+                log(`   Texto extraído: ${texto.length} caracteres`);
+
+                const bloques = trocearTexto(texto);
+                log(`   Bloques generados: ${bloques.length}`);
+
+                for (let i = 0; i < bloques.length; i++) {
+                    log(`\n🔹 Procesando bloque ${i + 1}/${bloques.length}...`);
+                    try {
+                        const embedding = await generarEmbedding(bloques[i]);
+                        await insertarDocumento(bloques[i], embedding);
+                        log(`   ✅ Bloque ${i + 1} subido correctamente`);
+                    } catch (err) {
+                        log(`   ❌ Error en bloque ${i + 1}: ${err.message}`);
+                    }
+                    //Pausa entre peticiones para no superar límites de la API
+                    await new Promise(r => setTimeout(r, 1000));
+                }
+
+                log('\n🎉 ¡Carga completada! Ya puedes usar el chatbox con RAG.');
+            } catch (err) {
+                log(`\n❌ Error general: ${err.message}`);
+            }
+
+            btn.disabled = false;
+        };
+    </script>
+</body>
+
+</html>
