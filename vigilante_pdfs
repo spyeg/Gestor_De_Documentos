@@ -6,16 +6,19 @@ import requests
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-# Credenciales — RELLENAR
+# Credenciales — rellena con las tuyas
 GEMINI_KEY = ""
 SUPABASE_URL = ""
 SUPABASE_ANON_KEY = ""
 
-# Carpeta RELLENAR
+# Carpeta a vigilar
 CARPETA = r""
 
 # Tamaño de cada bloque de texto en caracteres
 TAMANO_BLOQUE = 800
+
+# Límite máximo de tamaño de PDF en MB
+LIMITE_MB = 10
 
 # Archivo para registrar los PDFs ya procesados con su fecha de modificación
 REGISTRO = os.path.join(os.path.dirname(__file__), "pdfs_procesados.json")
@@ -114,8 +117,13 @@ def procesar_pdf(ruta_pdf, es_actualizacion=False):
     accion = "Actualizando" if es_actualizacion else "Procesando"
     print(f"\n📄 {accion}: {nombre}")
 
+    # Límite de tamaño de archivo
+    tamano_mb = os.path.getsize(ruta_pdf) / (1024 * 1024)
+    if tamano_mb > LIMITE_MB:
+        print(f"   ⚠️  Archivo demasiado grande ({tamano_mb:.1f} MB, límite {LIMITE_MB} MB) — omitido")
+        return False
+
     try:
-        # Si es actualización, borrar bloques anteriores primero
         if es_actualizacion:
             borrar_documentos_pdf(nombre)
 
@@ -129,7 +137,7 @@ def procesar_pdf(ruta_pdf, es_actualizacion=False):
             print(f"   🔹 Subiendo bloque {i + 1}/{len(bloques)}...")
             embedding = generar_embedding(bloque)
             insertar_documento(bloque, embedding, nombre)
-            time.sleep(1)  # Pausa para no superar límites de la API
+            time.sleep(1)
 
         print(f"   ✅ {nombre} subido correctamente")
         return True
@@ -139,12 +147,67 @@ def procesar_pdf(ruta_pdf, es_actualizacion=False):
         return False
 
 
-class ManejadorPDF(FileSystemEventHandler):
-    """Detecta nuevos PDFs o modificaciones en la carpeta vigilada."""
+def revisar_pendientes(procesados):
+    """Cola de pendientes: revisa la carpeta al arrancar y sube los PDFs nuevos o modificados."""
+    print("🔍 Revisando carpeta en busca de PDFs pendientes...")
+    pendientes = 0
 
-    def __init__(self):
-        # Registro: { "nombre.pdf": fecha_modificacion }
-        self.procesados = cargar_registro()
+    # Detección de borrados: PDFs en el registro que ya no existen en la carpeta
+    borrados = []
+    for nombre in list(procesados.keys()):
+        ruta = os.path.join(CARPETA, nombre)
+        if not os.path.exists(ruta):
+            borrados.append(nombre)
+
+    for nombre in borrados:
+        print(f"   🗑️  Detectado borrado mientras estaba apagado: {nombre}")
+        try:
+            borrar_documentos_pdf(nombre)
+            del procesados[nombre]
+            guardar_registro(procesados)
+            print(f"   ✅ {nombre} eliminado de Supabase correctamente")
+        except Exception as e:
+            print(f"   ❌ Error eliminando {nombre}: {e}")
+
+    for archivo in os.listdir(CARPETA):
+        if not archivo.lower().endswith(".pdf"):
+            continue
+
+        ruta = os.path.join(CARPETA, archivo)
+        fecha_actual = os.path.getmtime(ruta)
+        fecha_guardada = procesados.get(archivo)
+
+        if fecha_guardada is None:
+            print(f"   📋 Pendiente nuevo: {archivo}")
+            exito = procesar_pdf(ruta, es_actualizacion=False)
+            if exito:
+                procesados[archivo] = fecha_actual
+                guardar_registro(procesados)
+            pendientes += 1
+
+        elif abs(fecha_actual - fecha_guardada) > 1:
+            print(f"   🔄 Pendiente modificado: {archivo}")
+            exito = procesar_pdf(ruta, es_actualizacion=True)
+            if exito:
+                procesados[archivo] = fecha_actual
+                guardar_registro(procesados)
+            pendientes += 1
+
+    if pendientes == 0:
+        print("   ✅ No hay PDFs pendientes.")
+    else:
+        print(f"   ✅ {pendientes} PDF(s) pendiente(s) procesados.")
+
+
+class ManejadorPDF(FileSystemEventHandler):
+    """Detecta nuevos PDFs, modificaciones, borrados y renombrados."""
+
+    def __init__(self, procesados):
+        self.procesados = procesados
+        # Almacena temporalmente rutas de archivos movidos/renombrados
+        self._pendiente_renombrado = {}
+        # Control para evitar procesar el mismo archivo dos veces a la vez
+        self._en_proceso = set()
 
     def _gestionar_pdf(self, ruta):
         """Lógica común para nuevo PDF o PDF modificado."""
@@ -153,29 +216,35 @@ class ManejadorPDF(FileSystemEventHandler):
 
         nombre = os.path.basename(ruta)
 
-        # Esperar a que el archivo termine de copiarse/guardarse
+        # Evitar procesar el mismo archivo dos veces simultáneamente
+        if nombre in self._en_proceso:
+            return
+        self._en_proceso.add(nombre)
+
         time.sleep(2)
 
         if not os.path.exists(ruta):
+            self._en_proceso.discard(nombre)
             return
 
         fecha_actual = os.path.getmtime(ruta)
         fecha_guardada = self.procesados.get(nombre)
 
         if fecha_guardada is None:
-            # PDF nuevo
             exito = procesar_pdf(ruta, es_actualizacion=False)
         elif abs(fecha_actual - fecha_guardada) > 1:
-            # PDF modificado (diferencia de más de 1 segundo)
             print(f"\n🔄 Cambio detectado en: {nombre}")
             exito = procesar_pdf(ruta, es_actualizacion=True)
         else:
             print(f"⏭️  {nombre} sin cambios, omitiendo.")
+            self._en_proceso.discard(nombre)
             return
 
         if exito:
             self.procesados[nombre] = fecha_actual
             guardar_registro(self.procesados)
+
+        self._en_proceso.discard(nombre)
 
     def on_created(self, event):
         if event.is_directory:
@@ -194,36 +263,90 @@ class ManejadorPDF(FileSystemEventHandler):
             return
 
         nombre = os.path.basename(event.src_path)
-
         if nombre not in self.procesados:
             return
 
-        print(f"\n🗑️  PDF eliminado: {nombre}")
+        # Guardar temporalmente por si es un renombrado
+        self._pendiente_renombrado[nombre] = time.time()
+        time.sleep(1)
+
+        # Si sigue en pendientes después de 1 segundo es un borrado real
+        if nombre in self._pendiente_renombrado:
+            print(f"\n🗑️  PDF eliminado: {nombre}")
+            try:
+                borrar_documentos_pdf(nombre)
+                del self.procesados[nombre]
+                guardar_registro(self.procesados)
+                print(f"   ✅ {nombre} eliminado de Supabase correctamente")
+            except Exception as e:
+                print(f"   ❌ Error eliminando {nombre} de Supabase: {e}")
+            del self._pendiente_renombrado[nombre]
+
+    def on_moved(self, event):
+        """Detecta renombrado de archivos (Windows lo trata como movido)."""
+        if event.is_directory:
+            return
+
+        src = event.src_path
+        dst = event.dest_path
+
+        if not src.lower().endswith(".pdf") and not dst.lower().endswith(".pdf"):
+            return
+
+        nombre_antiguo = os.path.basename(src)
+        nombre_nuevo = os.path.basename(dst)
+
+        # Cancelar el borrado pendiente si lo había
+        if nombre_antiguo in self._pendiente_renombrado:
+            del self._pendiente_renombrado[nombre_antiguo]
+
+        if nombre_antiguo not in self.procesados:
+            self._gestionar_pdf(dst)
+            return
+
+        print(f"\n✏️  PDF renombrado: {nombre_antiguo} → {nombre_nuevo}")
+
         try:
-            borrar_documentos_pdf(nombre)
-            del self.procesados[nombre]
+            url = f"{SUPABASE_URL}/rest/v1/documentos?nombre_pdf=eq.{nombre_antiguo}"
+            headers = {
+                "Content-Type": "application/json",
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": f"Bearer {SUPABASE_ANON_KEY}"
+            }
+            res = requests.patch(url, json={"nombre_pdf": nombre_nuevo}, headers=headers)
+            if not res.ok:
+                raise Exception(res.text)
+
+            fecha = self.procesados.pop(nombre_antiguo)
+            self.procesados[nombre_nuevo] = fecha
             guardar_registro(self.procesados)
-            print(f"   ✅ {nombre} eliminado de Supabase correctamente")
+
+            print(f"   ✅ Nombre actualizado en Supabase correctamente")
+
         except Exception as e:
-            print(f"   ❌ Error eliminando {nombre} de Supabase: {e}")
+            print(f"   ❌ Error actualizando nombre en Supabase: {e}")
 
 
 def main():
     print("🤖 Vigilante de PDFs — Couce Consulting")
     print(f"📁 Carpeta vigilada: {CARPETA}")
-    print("⏳ Esperando nuevos PDFs o cambios...\n")
 
     if not os.path.exists(CARPETA):
         print(f"❌ La carpeta no existe: {CARPETA}")
         return
 
-    manejador = ManejadorPDF()
+    # Cola de pendientes: procesar PDFs añadidos mientras el script estaba apagado
+    procesados = cargar_registro()
+    revisar_pendientes(procesados)
+
+    print("\n⏳ Esperando nuevos PDFs o cambios...\n")
+
+    manejador = ManejadorPDF(procesados)
     observador = Observer()
     observador.schedule(manejador, CARPETA, recursive=False)
     observador.start()
 
     print(f"✅ Vigilando activamente: {CARPETA}")
-    print(f"   Archivos detectados en la carpeta: {os.listdir(CARPETA)}")
 
     try:
         while True:
