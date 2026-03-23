@@ -3,6 +3,8 @@ import time
 import json
 import fitz  # pymupdf
 import requests
+import docx as docx_lib  # python-docx
+import openpyxl  # openpyxl para Excel
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -17,10 +19,13 @@ CARPETA = r""
 # Tamaño de cada bloque de texto en caracteres
 TAMANO_BLOQUE = 800
 
-# Límite máximo de tamaño de PDF en MB (10 MB por defecto)
+# Límite máximo de tamaño de archivo en MB (10 MB por defecto)
 LIMITE_MB = 10
 
-# Archivo para registrar los PDFs ya procesados con su fecha de modificación
+# Extensiones de archivo soportadas
+EXTENSIONES = (".pdf", ".docx", ".xlsx", ".txt")
+
+# Archivo para registrar los archivos ya procesados con su fecha de modificación
 REGISTRO = os.path.join(os.path.dirname(__file__), "pdfs_procesados.json")
 
 
@@ -38,14 +43,35 @@ def guardar_registro(procesados):
         json.dump(procesados, f, ensure_ascii=False, indent=2)
 
 
-def extraer_texto(ruta_pdf):
-    """Extrae el texto de un PDF página a página."""
-    doc = fitz.open(ruta_pdf)
-    texto = ""
-    for pagina in doc:
-        texto += pagina.get_text() + "\n"
-    doc.close()
-    return texto
+def extraer_texto(ruta):
+    """Extrae el texto de un PDF, Word, Excel o TXT."""
+    extension = os.path.splitext(ruta)[1].lower()
+    if extension == ".pdf":
+        doc = fitz.open(ruta)
+        texto = ""
+        for pagina in doc:
+            texto += pagina.get_text() + "\n"
+        doc.close()
+        return texto
+    elif extension == ".docx":
+        doc = docx_lib.Document(ruta)
+        texto = "\n".join([parrafo.text for parrafo in doc.paragraphs if parrafo.text.strip()])
+        return texto
+    elif extension == ".xlsx":
+        wb = openpyxl.load_workbook(ruta, data_only=True)
+        lineas = []
+        for hoja in wb.worksheets:
+            lineas.append(f"Hoja: {hoja.title}")
+            for fila in hoja.iter_rows(values_only=True):
+                celdas = [str(c) for c in fila if c is not None]
+                if celdas:
+                    lineas.append(" | ".join(celdas))
+        return "\n".join(lineas)
+    elif extension == ".txt":
+        with open(ruta, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+    else:
+        raise Exception(f"Formato no soportado: {extension}")
 
 
 def trocear_texto(texto):
@@ -112,7 +138,7 @@ def insertar_documento(contenido, embedding, nombre_pdf):
 
 
 def procesar_pdf(ruta_pdf, es_actualizacion=False):
-    """Procesa un PDF completo y lo sube a Supabase."""
+    """Procesa un PDF o Word y lo sube a Supabase."""
     nombre = os.path.basename(ruta_pdf)
     accion = "Actualizando" if es_actualizacion else "Procesando"
     print(f"\n📄 {accion}: {nombre}")
@@ -156,7 +182,7 @@ def revisar_pendientes(procesados):
     todos_los_pdfs = set()
     for carpeta_actual, _, archivos in os.walk(CARPETA):
         for archivo in archivos:
-            if archivo.lower().endswith(".pdf"):
+            if archivo.lower().endswith(EXTENSIONES):
                 todos_los_pdfs.add(archivo)
 
     borrados = [nombre for nombre in list(procesados.keys()) if nombre not in todos_los_pdfs]
@@ -173,7 +199,7 @@ def revisar_pendientes(procesados):
 
     for carpeta_actual, _, archivos in os.walk(CARPETA):
         for archivo in archivos:
-            if not archivo.lower().endswith(".pdf"):
+            if not archivo.lower().endswith(EXTENSIONES):
                 continue
 
             ruta = os.path.join(carpeta_actual, archivo)
@@ -214,7 +240,7 @@ class ManejadorPDF(FileSystemEventHandler):
 
     def _gestionar_pdf(self, ruta):
         """Lógica común para nuevo PDF o PDF modificado."""
-        if not ruta.lower().endswith(".pdf"):
+        if not ruta.lower().endswith(EXTENSIONES):
             return
 
         nombre = os.path.basename(ruta)
@@ -283,7 +309,7 @@ class ManejadorPDF(FileSystemEventHandler):
                         print(f"   ❌ Error eliminando {nombre}: {e}")
             return
 
-        if not event.src_path.lower().endswith(".pdf"):
+        if not event.src_path.lower().endswith(EXTENSIONES):
             return
 
         nombre = os.path.basename(event.src_path)
@@ -314,7 +340,7 @@ class ManejadorPDF(FileSystemEventHandler):
         src = event.src_path
         dst = event.dest_path
 
-        if not src.lower().endswith(".pdf") and not dst.lower().endswith(".pdf"):
+        if not src.lower().endswith(EXTENSIONES) and not dst.lower().endswith(EXTENSIONES):
             return
 
         nombre_antiguo = os.path.basename(src)
@@ -384,7 +410,7 @@ def main():
                 todos_los_pdfs = set()
                 for carpeta_actual, _, archivos in os.walk(CARPETA):
                     for archivo in archivos:
-                        if archivo.lower().endswith(".pdf"):
+                        if archivo.lower().endswith(EXTENSIONES):
                             todos_los_pdfs.add(archivo)
                 borrados = [n for n in list(procesados.keys()) if n not in todos_los_pdfs]
                 for nombre in borrados:
