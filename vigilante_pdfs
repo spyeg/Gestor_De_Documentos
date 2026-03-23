@@ -17,7 +17,7 @@ CARPETA = r""
 # Tamaño de cada bloque de texto en caracteres
 TAMANO_BLOQUE = 800
 
-# Límite máximo de tamaño de PDF en MB
+# Límite máximo de tamaño de PDF en MB (10 MB por defecto)
 LIMITE_MB = 10
 
 # Archivo para registrar los PDFs ya procesados con su fecha de modificación
@@ -152,12 +152,14 @@ def revisar_pendientes(procesados):
     print("🔍 Revisando carpeta en busca de PDFs pendientes...")
     pendientes = 0
 
-    # Detección de borrados: PDFs en el registro que ya no existen en la carpeta
-    borrados = []
-    for nombre in list(procesados.keys()):
-        ruta = os.path.join(CARPETA, nombre)
-        if not os.path.exists(ruta):
-            borrados.append(nombre)
+    # Detección de borrados: PDFs en el registro que ya no existen en ninguna subcarpeta
+    todos_los_pdfs = set()
+    for carpeta_actual, _, archivos in os.walk(CARPETA):
+        for archivo in archivos:
+            if archivo.lower().endswith(".pdf"):
+                todos_los_pdfs.add(archivo)
+
+    borrados = [nombre for nombre in list(procesados.keys()) if nombre not in todos_los_pdfs]
 
     for nombre in borrados:
         print(f"   🗑️  Detectado borrado mientras estaba apagado: {nombre}")
@@ -169,29 +171,30 @@ def revisar_pendientes(procesados):
         except Exception as e:
             print(f"   ❌ Error eliminando {nombre}: {e}")
 
-    for archivo in os.listdir(CARPETA):
-        if not archivo.lower().endswith(".pdf"):
-            continue
+    for carpeta_actual, _, archivos in os.walk(CARPETA):
+        for archivo in archivos:
+            if not archivo.lower().endswith(".pdf"):
+                continue
 
-        ruta = os.path.join(CARPETA, archivo)
-        fecha_actual = os.path.getmtime(ruta)
-        fecha_guardada = procesados.get(archivo)
+            ruta = os.path.join(carpeta_actual, archivo)
+            fecha_actual = os.path.getmtime(ruta)
+            fecha_guardada = procesados.get(archivo)
 
-        if fecha_guardada is None:
-            print(f"   📋 Pendiente nuevo: {archivo}")
-            exito = procesar_pdf(ruta, es_actualizacion=False)
-            if exito:
-                procesados[archivo] = fecha_actual
-                guardar_registro(procesados)
-            pendientes += 1
+            if fecha_guardada is None:
+                print(f"   📋 Pendiente nuevo: {archivo}")
+                exito = procesar_pdf(ruta, es_actualizacion=False)
+                if exito:
+                    procesados[archivo] = fecha_actual
+                    guardar_registro(procesados)
+                pendientes += 1
 
-        elif abs(fecha_actual - fecha_guardada) > 1:
-            print(f"   🔄 Pendiente modificado: {archivo}")
-            exito = procesar_pdf(ruta, es_actualizacion=True)
-            if exito:
-                procesados[archivo] = fecha_actual
-                guardar_registro(procesados)
-            pendientes += 1
+            elif abs(fecha_actual - fecha_guardada) > 1:
+                print(f"   🔄 Pendiente modificado: {archivo}")
+                exito = procesar_pdf(ruta, es_actualizacion=True)
+                if exito:
+                    procesados[archivo] = fecha_actual
+                    guardar_registro(procesados)
+                pendientes += 1
 
     if pendientes == 0:
         print("   ✅ No hay PDFs pendientes.")
@@ -257,8 +260,29 @@ class ManejadorPDF(FileSystemEventHandler):
         self._gestionar_pdf(event.src_path)
 
     def on_deleted(self, event):
+        #Detección de borrado de carpeta con PDFs dentro
         if event.is_directory:
+            carpeta_borrada = os.path.normpath(event.src_path)
+            # Buscar PDFs registrados que ya no existen en ningún sitio
+            afectados = [
+                nombre for nombre in list(self.procesados.keys())
+                if not any(
+                    os.path.exists(os.path.join(r, nombre))
+                    for r, _, _ in os.walk(CARPETA)
+                )
+            ]
+            if afectados:
+                print(f"\n🗑️  Carpeta eliminada: {os.path.basename(carpeta_borrada)}")
+                for nombre in afectados:
+                    try:
+                        borrar_documentos_pdf(nombre)
+                        del self.procesados[nombre]
+                        guardar_registro(self.procesados)
+                        print(f"   ✅ {nombre} eliminado de Supabase correctamente")
+                    except Exception as e:
+                        print(f"   ❌ Error eliminando {nombre}: {e}")
             return
+
         if not event.src_path.lower().endswith(".pdf"):
             return
 
@@ -343,14 +367,35 @@ def main():
 
     manejador = ManejadorPDF(procesados)
     observador = Observer()
-    observador.schedule(manejador, CARPETA, recursive=False)
+    observador.schedule(manejador, CARPETA, recursive=True)
     observador.start()
 
     print(f"✅ Vigilando activamente: {CARPETA}")
 
+    #Comprobación periódica cada 10 segundos para detectar borrados que watchdog no captura
+    ultimo_chequeo = time.time()
+
     try:
         while True:
             time.sleep(1)
+            # Cada 10 segundos revisar si hay PDFs del registro que ya no existen
+            if time.time() - ultimo_chequeo >= 10:
+                ultimo_chequeo = time.time()
+                todos_los_pdfs = set()
+                for carpeta_actual, _, archivos in os.walk(CARPETA):
+                    for archivo in archivos:
+                        if archivo.lower().endswith(".pdf"):
+                            todos_los_pdfs.add(archivo)
+                borrados = [n for n in list(procesados.keys()) if n not in todos_los_pdfs]
+                for nombre in borrados:
+                    print(f"\n🗑️  PDF desaparecido detectado: {nombre}")
+                    try:
+                        borrar_documentos_pdf(nombre)
+                        del procesados[nombre]
+                        guardar_registro(procesados)
+                        print(f"   ✅ {nombre} eliminado de Supabase correctamente")
+                    except Exception as e:
+                        print(f"   ❌ Error eliminando {nombre}: {e}")
     except KeyboardInterrupt:
         print("\n⛔ Vigilante detenido.")
         observador.stop()
