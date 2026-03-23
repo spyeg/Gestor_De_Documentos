@@ -1,0 +1,239 @@
+import os
+import time
+import json
+import fitz  # pymupdf
+import requests
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+# Credenciales — RELLENAR
+GEMINI_KEY = ""
+SUPABASE_URL = ""
+SUPABASE_ANON_KEY = ""
+
+# Carpeta RELLENAR
+CARPETA = r""
+
+# Tamaño de cada bloque de texto en caracteres
+TAMANO_BLOQUE = 800
+
+# Archivo para registrar los PDFs ya procesados con su fecha de modificación
+REGISTRO = os.path.join(os.path.dirname(__file__), "pdfs_procesados.json")
+
+
+def cargar_registro():
+    """Carga el registro de PDFs procesados con su fecha de modificación."""
+    if os.path.exists(REGISTRO):
+        with open(REGISTRO, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def guardar_registro(procesados):
+    """Guarda el registro de PDFs procesados."""
+    with open(REGISTRO, "w", encoding="utf-8") as f:
+        json.dump(procesados, f, ensure_ascii=False, indent=2)
+
+
+def extraer_texto(ruta_pdf):
+    """Extrae el texto de un PDF página a página."""
+    doc = fitz.open(ruta_pdf)
+    texto = ""
+    for pagina in doc:
+        texto += pagina.get_text() + "\n"
+    doc.close()
+    return texto
+
+
+def trocear_texto(texto):
+    """Trocea el texto en bloques para los embeddings."""
+    bloques = []
+    inicio = 0
+    while inicio < len(texto):
+        fin = inicio + TAMANO_BLOQUE
+        if fin < len(texto):
+            ultimo_punto = texto.rfind(".", inicio, fin)
+            if ultimo_punto > inicio + 200:
+                fin = ultimo_punto + 1
+        bloque = texto[inicio:fin].strip()
+        if len(bloque) > 50:
+            bloques.append(bloque)
+        inicio = fin
+    return bloques
+
+
+def generar_embedding(texto):
+    """Genera el embedding de un texto con Gemini."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={GEMINI_KEY}"
+    body = {
+        "model": "models/gemini-embedding-001",
+        "content": {"parts": [{"text": texto}]}
+    }
+    res = requests.post(url, json=body)
+    data = res.json()
+    if "embedding" not in data:
+        raise Exception(f"Error generando embedding: {data}")
+    return data["embedding"]["values"]
+
+
+def borrar_documentos_pdf(nombre_pdf):
+    """Borra de Supabase todos los bloques de un PDF por su nombre."""
+    url = f"{SUPABASE_URL}/rest/v1/documentos?nombre_pdf=eq.{nombre_pdf}"
+    headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": f"Bearer {SUPABASE_ANON_KEY}"
+    }
+    res = requests.delete(url, headers=headers)
+    if not res.ok:
+        raise Exception(f"Error borrando documentos: {res.text}")
+    print(f"   🗑️  Bloques anteriores de {nombre_pdf} eliminados")
+
+
+def insertar_documento(contenido, embedding, nombre_pdf):
+    """Inserta un bloque en Supabase con el nombre del PDF origen."""
+    url = f"{SUPABASE_URL}/rest/v1/documentos"
+    headers = {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        "Prefer": "return=minimal"
+    }
+    body = {
+        "contenido": contenido,
+        "nombre_pdf": nombre_pdf,
+        "embedding": f"[{','.join(map(str, embedding))}]"
+    }
+    res = requests.post(url, json=body, headers=headers)
+    if not res.ok:
+        raise Exception(f"Error insertando en Supabase: {res.text}")
+
+
+def procesar_pdf(ruta_pdf, es_actualizacion=False):
+    """Procesa un PDF completo y lo sube a Supabase."""
+    nombre = os.path.basename(ruta_pdf)
+    accion = "Actualizando" if es_actualizacion else "Procesando"
+    print(f"\n📄 {accion}: {nombre}")
+
+    try:
+        # Si es actualización, borrar bloques anteriores primero
+        if es_actualizacion:
+            borrar_documentos_pdf(nombre)
+
+        texto = extraer_texto(ruta_pdf)
+        print(f"   Texto extraído: {len(texto)} caracteres")
+
+        bloques = trocear_texto(texto)
+        print(f"   Bloques generados: {len(bloques)}")
+
+        for i, bloque in enumerate(bloques):
+            print(f"   🔹 Subiendo bloque {i + 1}/{len(bloques)}...")
+            embedding = generar_embedding(bloque)
+            insertar_documento(bloque, embedding, nombre)
+            time.sleep(1)  # Pausa para no superar límites de la API
+
+        print(f"   ✅ {nombre} subido correctamente")
+        return True
+
+    except Exception as e:
+        print(f"   ❌ Error procesando {nombre}: {e}")
+        return False
+
+
+class ManejadorPDF(FileSystemEventHandler):
+    """Detecta nuevos PDFs o modificaciones en la carpeta vigilada."""
+
+    def __init__(self):
+        # Registro: { "nombre.pdf": fecha_modificacion }
+        self.procesados = cargar_registro()
+
+    def _gestionar_pdf(self, ruta):
+        """Lógica común para nuevo PDF o PDF modificado."""
+        if not ruta.lower().endswith(".pdf"):
+            return
+
+        nombre = os.path.basename(ruta)
+
+        # Esperar a que el archivo termine de copiarse/guardarse
+        time.sleep(2)
+
+        if not os.path.exists(ruta):
+            return
+
+        fecha_actual = os.path.getmtime(ruta)
+        fecha_guardada = self.procesados.get(nombre)
+
+        if fecha_guardada is None:
+            # PDF nuevo
+            exito = procesar_pdf(ruta, es_actualizacion=False)
+        elif abs(fecha_actual - fecha_guardada) > 1:
+            # PDF modificado (diferencia de más de 1 segundo)
+            print(f"\n🔄 Cambio detectado en: {nombre}")
+            exito = procesar_pdf(ruta, es_actualizacion=True)
+        else:
+            print(f"⏭️  {nombre} sin cambios, omitiendo.")
+            return
+
+        if exito:
+            self.procesados[nombre] = fecha_actual
+            guardar_registro(self.procesados)
+
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        self._gestionar_pdf(event.src_path)
+
+    def on_modified(self, event):
+        if event.is_directory:
+            return
+        self._gestionar_pdf(event.src_path)
+
+    def on_deleted(self, event):
+        if event.is_directory:
+            return
+        if not event.src_path.lower().endswith(".pdf"):
+            return
+
+        nombre = os.path.basename(event.src_path)
+
+        if nombre not in self.procesados:
+            return
+
+        print(f"\n🗑️  PDF eliminado: {nombre}")
+        try:
+            borrar_documentos_pdf(nombre)
+            del self.procesados[nombre]
+            guardar_registro(self.procesados)
+            print(f"   ✅ {nombre} eliminado de Supabase correctamente")
+        except Exception as e:
+            print(f"   ❌ Error eliminando {nombre} de Supabase: {e}")
+
+
+def main():
+    print("🤖 Vigilante de PDFs — Couce Consulting")
+    print(f"📁 Carpeta vigilada: {CARPETA}")
+    print("⏳ Esperando nuevos PDFs o cambios...\n")
+
+    if not os.path.exists(CARPETA):
+        print(f"❌ La carpeta no existe: {CARPETA}")
+        return
+
+    manejador = ManejadorPDF()
+    observador = Observer()
+    observador.schedule(manejador, CARPETA, recursive=False)
+    observador.start()
+
+    print(f"✅ Vigilando activamente: {CARPETA}")
+    print(f"   Archivos detectados en la carpeta: {os.listdir(CARPETA)}")
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n⛔ Vigilante detenido.")
+        observador.stop()
+
+    observador.join()
+
+
+if __name__ == "__main__":
+    main()
