@@ -17,13 +17,16 @@ SUPABASE_ANON_KEY = ""
 # Carpeta a vigilar
 CARPETA = r""
 
-# Tamaño de bloquede los archivos
+# Carpeta raíz del gestor de WordPress (para calcular la ruta relativa)
+CARPETA_WORDPRESS = r""
+
+# Opción C: tamaño de bloque aumentado para generar menos bloques por archivo
 TAMANO_BLOQUE = 1500
 
 # Límite máximo de tamaño de archivo en MB
 LIMITE_MB = 30
 
-# Número de bloques a subir en paralelo
+# Opción A: número de bloques a subir en paralelo
 BLOQUES_PARALELOS = 5
 
 # Extensiones de archivo soportadas
@@ -109,6 +112,19 @@ def generar_embedding(texto):
     return data["embedding"]["values"]
 
 
+def obtener_ruta_wordpress(ruta_absoluta):
+    """Calcula la ruta relativa del archivo dentro del gestor de WordPress."""
+    try:
+        # Intentar obtener ruta relativa desde la carpeta de WordPress
+        ruta_rel = os.path.relpath(ruta_absoluta, CARPETA_WORDPRESS)
+        # Normalizar separadores a /
+        return ruta_rel.replace("\\", "/")
+    except ValueError:
+        # Si el archivo no está bajo CARPETA_WORDPRESS usar ruta relativa desde CARPETA
+        ruta_rel = os.path.relpath(ruta_absoluta, CARPETA)
+        return ruta_rel.replace("\\", "/")
+
+
 def borrar_documentos_pdf(nombre_pdf):
     """Borra de Supabase todos los bloques de un archivo por su nombre."""
     url = f"{SUPABASE_URL}/rest/v1/documentos?nombre_pdf=eq.{nombre_pdf}"
@@ -122,8 +138,8 @@ def borrar_documentos_pdf(nombre_pdf):
     print(f"   🗑️  Bloques anteriores de {nombre_pdf} eliminados")
 
 
-def insertar_documento(contenido, embedding, nombre_pdf):
-    """Inserta un bloque en Supabase con el nombre del archivo origen."""
+def insertar_documento(contenido, embedding, nombre_pdf, ruta_archivo):
+    """Inserta un bloque en Supabase con el nombre y ruta del archivo origen."""
     url = f"{SUPABASE_URL}/rest/v1/documentos"
     headers = {
         "Content-Type": "application/json",
@@ -134,6 +150,7 @@ def insertar_documento(contenido, embedding, nombre_pdf):
     body = {
         "contenido": contenido,
         "nombre_pdf": nombre_pdf,
+        "ruta_archivo": ruta_archivo,
         "embedding": f"[{','.join(map(str, embedding))}]"
     }
     res = requests.post(url, json=body, headers=headers)
@@ -143,11 +160,11 @@ def insertar_documento(contenido, embedding, nombre_pdf):
 
 def procesar_bloque(args):
     """Procesa un bloque individual: genera embedding y lo sube. Usado en paralelo."""
-    indice, total, bloque, nombre = args
+    indice, total, bloque, nombre, ruta_archivo = args
     print(f"   🔹 Subiendo bloque {indice + 1}/{total}...")
     embedding = generar_embedding(bloque)
-    insertar_documento(bloque, embedding, nombre)
-    # pausa reducida entre peticiones
+    insertar_documento(bloque, embedding, nombre, ruta_archivo)
+    # Opción B: pausa reducida entre peticiones
     time.sleep(0.5)
     return True
 
@@ -174,8 +191,12 @@ def procesar_pdf(ruta_pdf, es_actualizacion=False):
         bloques = trocear_texto(texto)
         print(f"   Bloques generados: {len(bloques)} (subiendo {BLOQUES_PARALELOS} en paralelo)")
 
+        # Calcular ruta relativa para el gestor de WordPress
+        ruta_archivo = obtener_ruta_wordpress(ruta_pdf)
+        print(f"   📂 Ruta WordPress: {ruta_archivo}")
+
         # Opción A: subir bloques en paralelo
-        args = [(i, len(bloques), bloque, nombre) for i, bloque in enumerate(bloques)]
+        args = [(i, len(bloques), bloque, nombre, ruta_archivo) for i, bloque in enumerate(bloques)]
         with concurrent.futures.ThreadPoolExecutor(max_workers=BLOQUES_PARALELOS) as executor:
             resultados = list(executor.map(procesar_bloque, args))
 
@@ -421,8 +442,8 @@ def main():
     try:
         while True:
             time.sleep(1)
-            # Cada 10 segundos revisar si hay archivos del registro que ya no existen
-            if time.time() - ultimo_chequeo >= 10:
+            # Cada 10 mins revisar si hay archivos del registro que ya no existen
+            if time.time() - ultimo_chequeo >= 600:
                 ultimo_chequeo = time.time()
                 todos_los_archivos = set()
                 for carpeta_actual, _, archivos in os.walk(CARPETA):
