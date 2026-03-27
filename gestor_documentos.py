@@ -23,9 +23,9 @@ from pathlib import Path
 # ============================================
 
 # Credenciales
-GEMINI_KEY = "AIzaSyCBnQe60iOWHMVjJ5L6_uLeGL6gvSmtbX8"
-SUPABASE_URL = "https://zejbxsymddswbfabybkh.supabase.co"
-SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InplamJ4c3ltZGRzd2JmYWJ5YmtoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQyMzgyOTAsImV4cCI6MjA4OTgxNDI5MH0.d4CbmZgCKWhqJBw_J_oEYnhrr88vLSf4oGSf48Fm4sg"
+GEMINI_KEY = "pone tu api"
+SUPABASE_URL = "https://tu base.supabase.co"
+SUPABASE_ANON_KEY = "pon el tuyu"
 
 # Rutas
 RAIZ = "/home/spy/Descargas/couceconsulting/wp-content/uploads/portal-colaboraciones"
