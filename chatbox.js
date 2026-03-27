@@ -1,9 +1,15 @@
 (function () {
-    //Conexión api gemini
-    const GEMINI_KEY = "";//Introducir api key gemini
-    const URL_API = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_KEY;    //Conexión Supabase para RAG
-    const SUPABASE_URL = "";//Introducir url supabase
-    const SUPABASE_ANON_KEY = "";//Introducir clave anon supabase
+    // Credenciales desde config.js (debe cargarse antes en el HTML)
+    // Asegurar que CONFIG existe
+    if (typeof CONFIG === 'undefined') {
+        console.error('❌ CONFIG no está definido. Asegúrate de cargar config.js antes que chatbox.js');
+    }
+
+    const GEMINI_KEY = CONFIG.GEMINI_KEY;
+    const URL_API = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_KEY;
+    const SUPABASE_URL = CONFIG.SUPABASE_URL;
+    const SUPABASE_ANON_KEY = CONFIG.SUPABASE_ANON_KEY;
+
     //Instrucción a gemini
     const SISTEMA = `Eres el asistente experto de la consultora energética Couce Consulting. 
 
@@ -62,7 +68,7 @@ Tus reglas de funcionamiento:
         return data.embedding.values;
     };
 
-    //Buscar documentos relevantes en Supabase según la pregunta
+    // Buscar documentos relevantes en Supabase — ahora devuelve objeto con contexto Y fuentes
     const buscarContexto = async (embedding) => {
         const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/buscar_documentos`, {
             method: 'POST',
@@ -78,7 +84,20 @@ Tus reglas de funcionamiento:
         });
         if (!res.ok) throw new Error('Error buscando contexto en Supabase');
         const datos = await res.json();
-        return datos.map(d => d.contenido).join('\n\n');
+
+        // Extraer texto para el contexto
+        const contexto = datos.map(d => d.contenido).join('\n\n');
+
+        // Deduplicar fuentes por nombre_pdf
+        const fuentesMap = new Map();
+        datos.forEach(d => {
+            if (d.nombre_pdf && !fuentesMap.has(d.nombre_pdf)) {
+                fuentesMap.set(d.nombre_pdf, d.ruta_archivo || null);
+            }
+        });
+        const fuentes = Array.from(fuentesMap.entries()).map(([nombre, ruta]) => ({ nombre, ruta }));
+
+        return { contexto, fuentes };
     };
 
     const initChat = () => {
@@ -89,7 +108,6 @@ Tus reglas de funcionamiento:
         const inputEl = document.getElementById('chat-input');
         const mensajesEl = document.getElementById('chat-mensajes');
         const hBienvenida = document.getElementById('hora-bienvenida');
-        //Elemento contador de caracteres
         const contadorEl = document.getElementById('char-contador');
 
         if (hBienvenida) hBienvenida.textContent = obtenerHora();
@@ -102,18 +120,17 @@ Tus reglas de funcionamiento:
             launcher.classList.toggle('chat-abierto', !abierto);
             if (!abierto) inputEl.focus();
         };
-        //Btn-cerrar con área de click más grande (aplicado en CSS)
+
         btnCerrar.onclick = (e) => {
             e.preventDefault();
             windowChat.classList.add('hidden');
             launcher.classList.remove('chat-abierto');
         };
 
-        //Auto-resize del textarea al escribir
+        // Auto-resize del textarea al escribir
         inputEl.addEventListener('input', () => {
             inputEl.style.height = 'auto';
             inputEl.style.height = Math.min(inputEl.scrollHeight, 100) + 'px';
-            //Actualizar contador de caracteres
             const len = inputEl.value.length;
             if (contadorEl) {
                 contadorEl.textContent = `${len}/${MAX_CHARS}`;
@@ -141,13 +158,28 @@ Tus reglas de funcionamiento:
             if (el) el.remove();
         };
 
-        // Burbuja bot con botón copiar y renderizado
-        const agregarRespuestaBot = (texto) => {
+        // Base del servidor local de PDFs — arranca con: python -m http.server 8080
+        const PDF_SERVER = 'http://localhost:8080/';
+
+        // Construir HTML de fuentes clicables
+        const construirFuentes = (fuentes) => {
+            if (!fuentes || fuentes.length === 0) return '';
+            const items = fuentes.map(f => {
+                const nombre = sanitizar(f.nombre);
+                // Construir URL completa combinando el servidor local + la ruta relativa de Supabase
+                const url = PDF_SERVER + f.ruta;
+                return `<a class="fuente-link" href="${url}" target="_blank" rel="noopener noreferrer">${nombre}</a>`;
+            }).join('');
+            return `<div class="fuentes-wrapper"><span class="fuentes-label">Fuente</span><div class="fuentes-lista">${items}</div></div>`;
+        };
+
+        // Burbuja bot con botón copiar, renderizado y fuentes
+        const agregarRespuestaBot = (texto, fuentes = []) => {
             const div = document.createElement('div');
             div.className = 'burbuja bot';
-            //Renderizar respuestas del bot
             div.innerHTML = `<div>
                 <div class="burbuja-texto md-content">${renderMarkdown(texto)}</div>
+                ${construirFuentes(fuentes)}
                 <div style="display:flex;align-items:center;gap:6px;">
                     <div class="burbuja-hora">${obtenerHora()}</div>
                     <button class="btn-copiar">
@@ -175,11 +207,9 @@ Tus reglas de funcionamiento:
 
             const msgDiv = document.createElement('div');
             msgDiv.className = 'burbuja usuario';
-            //Sanitizar input del usuario antes de mostrarlo
             msgDiv.innerHTML = `<div><div class="burbuja-texto">${sanitizar(txt)}</div><div class="burbuja-hora">${obtenerHora()}</div></div>`;
             mensajesEl.appendChild(msgDiv);
 
-            //Resetear altura del textarea tras enviar
             inputEl.value = '';
             inputEl.style.height = 'auto';
             if (contadorEl) {
@@ -189,31 +219,26 @@ Tus reglas de funcionamiento:
             mensajesEl.scrollTop = mensajesEl.scrollHeight;
 
             mostrarTyping();
-            //Estado de carga en el botón enviar, bloquear input también
             btnEnviar.disabled = true;
             btnEnviar.classList.add('enviando');
             inputEl.disabled = true;
             inputEl.style.opacity = '0.5';
 
             try {
-                //convertir pregunta en embedding
                 const embedding = await generarEmbedding(txt);
 
-                //buscar documentos relevantes en Supabase
-                const contexto = await buscarContexto(embedding);
+                // buscarContexto ahora devuelve { contexto, fuentes }
+                const { contexto, fuentes } = await buscarContexto(embedding);
 
-                //añadir al historial con contexto
                 historial.push({
                     role: "user",
                     parts: [{ text: `Contexto relevante:\n${contexto}\n\nPregunta del usuario: ${txt}` }]
                 });
 
-                //Recortar historial para mantener solo los últimos mensajes
                 if (historial.length > MAX_HISTORIAL) {
                     historial = historial.slice(historial.length - MAX_HISTORIAL);
                 }
 
-                //enviar a Gemini con el contexto
                 const response = await fetch(URL_API, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -229,7 +254,8 @@ Tus reglas de funcionamiento:
                 if (data.candidates && data.candidates[0]?.content?.parts[0]?.text) {
                     const respuesta = data.candidates[0].content.parts[0].text;
                     historial.push({ role: "model", parts: [{ text: respuesta }] });
-                    agregarRespuestaBot(respuesta);
+                    // Pasar fuentes a la burbuja
+                    agregarRespuestaBot(respuesta, fuentes);
                 } else {
                     const errorMsg = data.error?.message || "No se pudo obtener respuesta.";
                     agregarRespuestaBot(`⚠️ ${errorMsg}`);
@@ -239,7 +265,6 @@ Tus reglas de funcionamiento:
                 console.error("Error:", error);
                 agregarRespuestaBot("❌ No se ha podido conectar con la IA.");
             } finally {
-                //Restaurar botón enviar e input tras respuesta
                 btnEnviar.disabled = false;
                 btnEnviar.classList.remove('enviando');
                 inputEl.disabled = false;

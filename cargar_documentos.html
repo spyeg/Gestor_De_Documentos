@@ -90,8 +90,15 @@
     <button id="btn" onclick="cargar()" disabled>Cargar en Supabase</button>
     <div id="log">Esperando archivo...</div>
 
-    <script>
-        //Credenciales
+    <script src="config.js"></script>
+<script>
+    // Credenciales desde config.js
+    const GEMINI_KEY = CONFIG.GEMINI_KEY;
+    const URL_API = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_KEY;
+    const SUPABASE_URL = CONFIG.SUPABASE_URL;
+    const SUPABASE_ANON_KEY = CONFIG.SUPABASE_ANON_KEY;
+    
+    // El resto del código queda igual...
 
         //Configuración de PDF.js
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';

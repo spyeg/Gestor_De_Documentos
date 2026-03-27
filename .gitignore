@@ -1,0 +1,26 @@
+# 🔒 Variables de entorno (MUY IMPORTANTE)
+.env
+.env.*
+!.env.example
+
+# Configuración sensible
+config.js
+
+# Archivos de registro / datos
+*.log
+pdfs_procesados.json
+estado_manual_general.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+venv/
+env/
+.venv/
+
+# Archivos del sistema
+.DS_Store
+*.log
+Thumbs.db

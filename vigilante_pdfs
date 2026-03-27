@@ -1,46 +1,129 @@
+#!/usr/bin/env python3
+"""
+Vigilante Definitivo - Couce Consulting
+Sistema de monitoreo de archivos con sincronización automática a Supabase
+"""
+
 import os
+import sys
 import time
 import json
+import shutil
+import hashlib
+import logging
+import traceback
+from datetime import datetime
+from pathlib import Path
+
+# Dependencias externas
 import fitz  # pymupdf
 import requests
-import docx as docx_lib  # python-docx
-import openpyxl  # openpyxl para Excel
-import concurrent.futures  # Para subida en paralelo
+import docx as docx_lib
+import openpyxl
+import concurrent.futures
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-# Credenciales — rellena con las tuyas
-GEMINI_KEY = ""
-SUPABASE_URL = ""
-SUPABASE_ANON_KEY = ""
+# ============================================
+# CONFIGURACIÓN
+# ============================================
 
-# Carpeta a vigilar
-CARPETA = r""
+# Credenciales
+GEMINI_KEY = "AIzaSyBGlfsZ8koralfzGdcYu0lN5fZXjdgv0-o"
+SUPABASE_URL = "https://zejbxsymddswbfabybkh.supabase.co"
+SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InplamJ4c3ltZGRzd2JmYWJ5YmtoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQyMzgyOTAsImV4cCI6MjA4OTgxNDI5MH0.d4CbmZgCKWhqJBw_J_oEYnhrr88vLSf4oGSf48Fm4sg"
 
-# Carpeta raíz del gestor de WordPress (para calcular la ruta relativa)
-CARPETA_WORDPRESS = r""
+# Rutas
+RAIZ = "/home/spy/Descargas/couceconsulting/wp-content/uploads/portal-colaboraciones"
+CARPETA_ORIGINALES = os.path.join(RAIZ, "originales")
+CARPETA_BORRADORES = os.path.join(RAIZ, "borradores")
+CARPETA_HISTORICO = os.path.join(RAIZ, "historico")
+CARPETA_WORDPRESS = "/home/spy/Descargas/couceconsulting"
 
-# Opción C: tamaño de bloque aumentado para generar menos bloques por archivo
-TAMANO_BLOQUE = 1500
+# Crear carpetas si no existen
+for carpeta in [CARPETA_ORIGINALES, CARPETA_BORRADORES, CARPETA_HISTORICO]:
+    os.makedirs(carpeta, exist_ok=True)
 
-# Límite máximo de tamaño de archivo en MB
+# Configuración del sistema
+TAMANO_BLOQUE = 3000
 LIMITE_MB = 30
-
-# Opción A: número de bloques a subir en paralelo
 BLOQUES_PARALELOS = 5
-
-# Extensiones de archivo soportadas
 EXTENSIONES = (".pdf", ".docx", ".xlsx", ".txt")
 
-# Archivo para registrar los archivos ya procesados con su fecha de modificación
-REGISTRO = os.path.join(os.path.dirname(__file__), "pdfs_procesados.json")
+# Archivos de registro
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+REGISTRO = os.path.join(BASE_DIR, "pdfs_procesados.json")
+ESTADO_GENERAL = os.path.join(RAIZ, "estado_manual_general.json")
+LOG_FILE = os.path.join(BASE_DIR, "vigilante.log")
+
+# Configurar logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+
+# ============================================
+# FUNCIONES DE UTILIDAD
+# ============================================
+
+def calcular_hash_archivo(ruta):
+    """Calcula el hash MD5 de un archivo para detectar cambios reales."""
+    hash_md5 = hashlib.md5()
+    with open(ruta, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
+
+
+def obtener_siguiente_version(nombre_base, carpeta_destino):
+    """Obtiene el siguiente número de versión para un archivo."""
+    nombre_sin_ext, ext = os.path.splitext(nombre_base)
+    version = 1
+    
+    while True:
+        nombre_versionado = f"{nombre_sin_ext}_v{version}{ext}"
+        ruta_version = os.path.join(carpeta_destino, nombre_versionado)
+        if not os.path.exists(ruta_version):
+            return nombre_versionado, ruta_version
+        version += 1
+
+
+def crear_version(ruta_original):
+    """Crea una nueva versión del archivo en la carpeta de borradores."""
+    nombre_original = os.path.basename(ruta_original)
+    nombre_versionado, ruta_destino = obtener_siguiente_version(nombre_original, CARPETA_BORRADORES)
+    
+    shutil.copy2(ruta_original, ruta_destino)
+    logger.info(f"📋 Nueva versión creada: {nombre_versionado}")
+    return ruta_destino
+
+
+def mover_a_historico(ruta_archivo):
+    """Mueve un archivo a la carpeta histórico cuando se reemplaza."""
+    nombre = os.path.basename(ruta_archivo)
+    fecha = datetime.now().strftime("%Y%m%d_%H%M%S")
+    nombre_historico = f"{fecha}_{nombre}"
+    ruta_destino = os.path.join(CARPETA_HISTORICO, nombre_historico)
+    
+    shutil.move(ruta_archivo, ruta_destino)
+    logger.info(f"📦 Archivo movido a histórico: {nombre_historico}")
+    return ruta_destino
 
 
 def cargar_registro():
-    """Carga el registro de archivos procesados con su fecha de modificación."""
+    """Carga el registro de archivos procesados."""
     if os.path.exists(REGISTRO):
-        with open(REGISTRO, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(REGISTRO, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
     return {}
 
 
@@ -50,96 +133,133 @@ def guardar_registro(procesados):
         json.dump(procesados, f, ensure_ascii=False, indent=2)
 
 
+# ============================================
+# FUNCIONES DE EXTRACCIÓN DE TEXTO
+# ============================================
+
 def extraer_texto(ruta):
     """Extrae el texto de un PDF, Word, Excel o TXT."""
     extension = os.path.splitext(ruta)[1].lower()
-    if extension == ".pdf":
-        doc = fitz.open(ruta)
-        texto = ""
-        for pagina in doc:
-            texto += pagina.get_text() + "\n"
-        doc.close()
-        return texto
-    elif extension == ".docx":
-        doc = docx_lib.Document(ruta)
-        texto = "\n".join([parrafo.text for parrafo in doc.paragraphs if parrafo.text.strip()])
-        return texto
-    elif extension == ".xlsx":
-        wb = openpyxl.load_workbook(ruta, data_only=True)
-        lineas = []
-        for hoja in wb.worksheets:
-            lineas.append(f"Hoja: {hoja.title}")
-            for fila in hoja.iter_rows(values_only=True):
-                celdas = [str(c) for c in fila if c is not None]
-                if celdas:
-                    lineas.append(" | ".join(celdas))
-        return "\n".join(lineas)
-    elif extension == ".txt":
-        with open(ruta, "r", encoding="utf-8", errors="ignore") as f:
-            return f.read()
-    else:
-        raise Exception(f"Formato no soportado: {extension}")
+    
+    try:
+        if extension == ".pdf":
+            doc = fitz.open(ruta)
+            texto = ""
+            for pagina in doc:
+                texto += pagina.get_text() + "\n"
+            doc.close()
+            return texto
+        
+        elif extension == ".docx":
+            doc = docx_lib.Document(ruta)
+            texto = "\n".join([parrafo.text for parrafo in doc.paragraphs if parrafo.text.strip()])
+            return texto
+        
+        elif extension == ".xlsx":
+            wb = openpyxl.load_workbook(ruta, data_only=True)
+            lineas = []
+            for hoja in wb.worksheets:
+                lineas.append(f"Hoja: {hoja.title}")
+                for fila in hoja.iter_rows(values_only=True):
+                    celdas = [str(c) for c in fila if c is not None]
+                    if celdas:
+                        lineas.append(" | ".join(celdas))
+            return "\n".join(lineas)
+        
+        elif extension == ".txt":
+            with open(ruta, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+        
+        else:
+            raise Exception(f"Formato no soportado: {extension}")
+            
+    except Exception as e:
+        logger.error(f"Error extrayendo texto de {ruta}: {e}")
+        raise
 
 
 def trocear_texto(texto):
     """Trocea el texto en bloques para los embeddings."""
     bloques = []
     inicio = 0
+    
     while inicio < len(texto):
         fin = inicio + TAMANO_BLOQUE
+        
         if fin < len(texto):
+            # Intentar cortar por punto o salto de línea
             ultimo_punto = texto.rfind(".", inicio, fin)
-            if ultimo_punto > inicio + 200:
-                fin = ultimo_punto + 1
+            ultimo_salto = texto.rfind("\n", inicio, fin)
+            punto_corte = max(ultimo_punto, ultimo_salto)
+            
+            if punto_corte > inicio + 200:
+                fin = punto_corte + 1
+        
         bloque = texto[inicio:fin].strip()
         if len(bloque) > 50:
             bloques.append(bloque)
+        
         inicio = fin
+    
     return bloques
 
+
+# ============================================
+# FUNCIONES DE SUPABASE
+# ============================================
 
 def generar_embedding(texto):
     """Genera el embedding de un texto con Gemini."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={GEMINI_KEY}"
     body = {
         "model": "models/gemini-embedding-001",
-        "content": {"parts": [{"text": texto}]}
+        "content": {"parts": [{"text": texto[:3000]}]}  # Limitar para no exceder
     }
-    res = requests.post(url, json=body)
-    data = res.json()
-    if "embedding" not in data:
-        raise Exception(f"Error generando embedding: {data}")
-    return data["embedding"]["values"]
+    
+    try:
+        res = requests.post(url, json=body, timeout=30)
+        data = res.json()
+        
+        if "embedding" not in data:
+            raise Exception(f"Error en API: {data}")
+        
+        return data["embedding"]["values"]
+    except Exception as e:
+        logger.error(f"Error generando embedding: {e}")
+        raise
 
 
 def obtener_ruta_wordpress(ruta_absoluta):
-    """Calcula la ruta relativa del archivo dentro del gestor de WordPress."""
+    """Calcula la ruta relativa para WordPress."""
     try:
-        # Intentar obtener ruta relativa desde la carpeta de WordPress
         ruta_rel = os.path.relpath(ruta_absoluta, CARPETA_WORDPRESS)
-        # Normalizar separadores a /
         return ruta_rel.replace("\\", "/")
     except ValueError:
-        # Si el archivo no está bajo CARPETA_WORDPRESS usar ruta relativa desde CARPETA
-        ruta_rel = os.path.relpath(ruta_absoluta, CARPETA)
+        ruta_rel = os.path.relpath(ruta_absoluta, RAIZ)
         return ruta_rel.replace("\\", "/")
 
 
-def borrar_documentos_pdf(nombre_pdf):
-    """Borra de Supabase todos los bloques de un archivo por su nombre."""
+def borrar_documentos_supabase(nombre_pdf):
+    """Borra de Supabase todos los bloques de un archivo."""
     url = f"{SUPABASE_URL}/rest/v1/documentos?nombre_pdf=eq.{nombre_pdf}"
     headers = {
         "apikey": SUPABASE_ANON_KEY,
         "Authorization": f"Bearer {SUPABASE_ANON_KEY}"
     }
-    res = requests.delete(url, headers=headers)
-    if not res.ok:
-        raise Exception(f"Error borrando documentos: {res.text}")
-    print(f"   🗑️  Bloques anteriores de {nombre_pdf} eliminados")
+    
+    try:
+        res = requests.delete(url, headers=headers, timeout=30)
+        if not res.ok:
+            raise Exception(f"Error {res.status_code}: {res.text}")
+        logger.info(f"🗑️  Eliminados bloques de {nombre_pdf}")
+        return True
+    except Exception as e:
+        logger.error(f"Error borrando {nombre_pdf}: {e}")
+        return False
 
 
-def insertar_documento(contenido, embedding, nombre_pdf, ruta_archivo):
-    """Inserta un bloque en Supabase con el nombre y ruta del archivo origen."""
+def insertar_documento_supabase(contenido, embedding, nombre_pdf, ruta_archivo):
+    """Inserta un bloque en Supabase."""
     url = f"{SUPABASE_URL}/rest/v1/documentos"
     headers = {
         "Content-Type": "application/json",
@@ -147,324 +267,365 @@ def insertar_documento(contenido, embedding, nombre_pdf, ruta_archivo):
         "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
         "Prefer": "return=minimal"
     }
+    
     body = {
-        "contenido": contenido,
+        "contenido": contenido[:2000],  # Limitar tamaño
         "nombre_pdf": nombre_pdf,
         "ruta_archivo": ruta_archivo,
         "embedding": f"[{','.join(map(str, embedding))}]"
     }
-    res = requests.post(url, json=body, headers=headers)
-    if not res.ok:
-        raise Exception(f"Error insertando en Supabase: {res.text}")
+    
+    try:
+        res = requests.post(url, json=body, headers=headers, timeout=30)
+        if not res.ok:
+            raise Exception(f"Error {res.status_code}: {res.text}")
+        return True
+    except Exception as e:
+        logger.error(f"Error insertando bloque: {e}")
+        return False
 
 
 def procesar_bloque(args):
-    """Procesa un bloque individual: genera embedding y lo sube. Usado en paralelo."""
+    """Procesa un bloque individual."""
     indice, total, bloque, nombre, ruta_archivo = args
-    print(f"   🔹 Subiendo bloque {indice + 1}/{total}...")
+    logger.info(f"   🔹 Subiendo bloque {indice + 1}/{total}...")
+    
     embedding = generar_embedding(bloque)
-    insertar_documento(bloque, embedding, nombre, ruta_archivo)
-    # Opción B: pausa reducida entre peticiones
-    time.sleep(0.5)
-    return True
+    exito = insertar_documento_supabase(bloque, embedding, nombre, ruta_archivo)
+    
+    time.sleep(0.3)  # Pausa entre peticiones
+    return exito
 
 
-def procesar_pdf(ruta_pdf, es_actualizacion=False):
-    """Procesa un archivo completo y lo sube a Supabase con bloques en paralelo."""
-    nombre = os.path.basename(ruta_pdf)
+# ============================================
+# FUNCIONES PRINCIPALES
+# ============================================
+
+def procesar_archivo(ruta_archivo, es_actualizacion=False):
+    """Procesa un archivo completo y lo sube a Supabase."""
+    nombre = os.path.basename(ruta_archivo)
     accion = "Actualizando" if es_actualizacion else "Procesando"
-    print(f"\n📄 {accion}: {nombre}")
-
-    # Límite de tamaño de archivo
-    tamano_mb = os.path.getsize(ruta_pdf) / (1024 * 1024)
+    
+    logger.info(f"\n📄 {accion}: {nombre}")
+    
+    # Verificar tamaño
+    tamano_mb = os.path.getsize(ruta_archivo) / (1024 * 1024)
     if tamano_mb > LIMITE_MB:
-        print(f"   ⚠️  Archivo demasiado grande ({tamano_mb:.1f} MB, límite {LIMITE_MB} MB) — omitido")
+        logger.warning(f"   ⚠️ Archivo demasiado grande ({tamano_mb:.1f} MB)")
         return False
-
+    
     try:
+        # Si es actualización y está en originales, crear nueva versión
+        if es_actualizacion and CARPETA_ORIGINALES in ruta_archivo:
+            logger.info(f"   🔄 Creando nueva versión...")
+            mover_a_historico(ruta_archivo)
+            return True
+        
+        # Eliminar versión anterior si es actualización
         if es_actualizacion:
-            borrar_documentos_pdf(nombre)
-
-        texto = extraer_texto(ruta_pdf)
-        print(f"   Texto extraído: {len(texto)} caracteres")
-
+            borrar_documentos_supabase(nombre)
+        
+        # Extraer texto
+        texto = extraer_texto(ruta_archivo)
+        logger.info(f"   Texto extraído: {len(texto)} caracteres")
+        
+        if not texto.strip():
+            logger.warning(f"   ⚠️ El archivo no contiene texto extraíble")
+            return False
+        
+        # Trocear en bloques
         bloques = trocear_texto(texto)
-        print(f"   Bloques generados: {len(bloques)} (subiendo {BLOQUES_PARALELOS} en paralelo)")
-
-        # Calcular ruta relativa para el gestor de WordPress
-        ruta_archivo = obtener_ruta_wordpress(ruta_pdf)
-        print(f"   📂 Ruta WordPress: {ruta_archivo}")
-
-        # Opción A: subir bloques en paralelo
-        args = [(i, len(bloques), bloque, nombre, ruta_archivo) for i, bloque in enumerate(bloques)]
+        logger.info(f"   Bloques generados: {len(bloques)}")
+        
+        if not bloques:
+            logger.warning(f"   ⚠️ No se generaron bloques")
+            return False
+        
+        # Ruta WordPress
+        ruta_wp = obtener_ruta_wordpress(ruta_archivo)
+        logger.info(f"   📂 Ruta WordPress: {ruta_wp}")
+        
+        # Procesar bloques en paralelo
+        args = [(i, len(bloques), bloque, nombre, ruta_wp) for i, bloque in enumerate(bloques)]
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=BLOQUES_PARALELOS) as executor:
             resultados = list(executor.map(procesar_bloque, args))
-
+        
         if all(resultados):
-            print(f"   ✅ {nombre} subido correctamente")
+            logger.info(f"   ✅ {nombre} procesado correctamente")
             return True
         else:
-            print(f"   ⚠️  {nombre} subido con algunos errores")
+            logger.warning(f"   ⚠️ {nombre} procesado con errores parciales")
             return False
-
+            
     except Exception as e:
-        print(f"   ❌ Error procesando {nombre}: {e}")
+        logger.error(f"   ❌ Error procesando {nombre}: {e}")
+        logger.error(traceback.format_exc())
         return False
 
 
-def revisar_pendientes(procesados):
-    """Cola de pendientes: revisa la carpeta al arrancar y sube los archivos nuevos o modificados."""
-    print("🔍 Revisando carpeta en busca de archivos pendientes...")
-    pendientes = 0
-
-    # Detección de borrados: archivos en el registro que ya no existen en ninguna subcarpeta
-    todos_los_archivos = set()
-    for carpeta_actual, _, archivos in os.walk(CARPETA):
-        for archivo in archivos:
-            if archivo.lower().endswith(EXTENSIONES):
-                todos_los_archivos.add(archivo)
-
-    borrados = [nombre for nombre in list(procesados.keys()) if nombre not in todos_los_archivos]
-
-    for nombre in borrados:
-        print(f"   🗑️  Detectado borrado mientras estaba apagado: {nombre}")
-        try:
-            borrar_documentos_pdf(nombre)
-            del procesados[nombre]
-            guardar_registro(procesados)
-            print(f"   ✅ {nombre} eliminado de Supabase correctamente")
-        except Exception as e:
-            print(f"   ❌ Error eliminando {nombre}: {e}")
-
-    for carpeta_actual, _, archivos in os.walk(CARPETA):
-        for archivo in archivos:
-            if not archivo.lower().endswith(EXTENSIONES):
-                continue
-
-            ruta = os.path.join(carpeta_actual, archivo)
-            fecha_actual = os.path.getmtime(ruta)
-            fecha_guardada = procesados.get(archivo)
-
-            if fecha_guardada is None:
-                print(f"   📋 Pendiente nuevo: {archivo}")
-                exito = procesar_pdf(ruta, es_actualizacion=False)
-                if exito:
-                    procesados[archivo] = fecha_actual
-                    guardar_registro(procesados)
-                pendientes += 1
-
-            elif abs(fecha_actual - fecha_guardada) > 1:
-                print(f"   🔄 Pendiente modificado: {archivo}")
-                exito = procesar_pdf(ruta, es_actualizacion=True)
-                if exito:
-                    procesados[archivo] = fecha_actual
-                    guardar_registro(procesados)
-                pendientes += 1
-
-    if pendientes == 0:
-        print("   ✅ No hay archivos pendientes.")
-    else:
-        print(f"   ✅ {pendientes} archivo(s) pendiente(s) procesados.")
+def eliminar_archivo_supabase(nombre_archivo):
+    """Elimina un archivo de Supabase."""
+    logger.info(f"\n🗑️ Eliminando: {nombre_archivo}")
+    
+    try:
+        exito = borrar_documentos_supabase(nombre_archivo)
+        if exito:
+            logger.info(f"   ✅ {nombre_archivo} eliminado de Supabase")
+        return exito
+    except Exception as e:
+        logger.error(f"   ❌ Error eliminando {nombre_archivo}: {e}")
+        return False
 
 
-class ManejadorPDF(FileSystemEventHandler):
-    """Detecta nuevos archivos, modificaciones, borrados y renombrados."""
+def sincronizar_inicial():
+    """Sincroniza todos los archivos existentes al iniciar."""
+    logger.info("=" * 60)
+    logger.info("🔄 SINCRONIZACIÓN INICIAL")
+    logger.info("=" * 60)
+    
+    procesados = cargar_registro()
+    archivos_actuales = {}
+    
+    # Recopilar todos los archivos actuales
+    for carpeta in [CARPETA_ORIGINALES, CARPETA_BORRADORES]:
+        if not os.path.exists(carpeta):
+            continue
+        
+        for root, dirs, files in os.walk(carpeta):
+            for archivo in files:
+                if archivo.lower().endswith(EXTENSIONES):
+                    ruta = os.path.join(root, archivo)
+                    archivos_actuales[archivo] = {
+                        "ruta": ruta,
+                        "fecha": os.path.getmtime(ruta),
+                        "hash": calcular_hash_archivo(ruta)
+                    }
+    
+    # Detectar archivos nuevos o modificados
+    nuevos = 0
+    modificados = 0
+    
+    for nombre, info in archivos_actuales.items():
+        if nombre not in procesados:
+            logger.info(f"📋 Nuevo archivo detectado: {nombre}")
+            if procesar_archivo(info["ruta"], es_actualizacion=False):
+                procesados[nombre] = {
+                    "fecha": info["fecha"],
+                    "hash": info["hash"]
+                }
+                nuevos += 1
+        else:
+            fecha_guardada = procesados[nombre].get("fecha", 0) if isinstance(procesados[nombre], dict) else procesados[nombre]
+            if abs(info["fecha"] - fecha_guardada) > 1:
+                logger.info(f"🔄 Archivo modificado: {nombre}")
+                if procesar_archivo(info["ruta"], es_actualizacion=True):
+                    procesados[nombre] = {
+                        "fecha": info["fecha"],
+                        "hash": info["hash"]
+                    }
+                    modificados += 1
+    
+    # Detectar archivos eliminados
+    eliminados = []
+    for nombre in list(procesados.keys()):
+        if nombre not in archivos_actuales:
+            logger.info(f"🗑️ Archivo eliminado detectado: {nombre}")
+            if eliminar_archivo_supabase(nombre):
+                eliminados.append(nombre)
+    
+    # Limpiar registro de eliminados
+    for nombre in eliminados:
+        del procesados[nombre]
+    
+    # Guardar registro
+    guardar_registro(procesados)
+    
+    logger.info("=" * 60)
+    logger.info(f"✅ Sincronización completada:")
+    logger.info(f"   Nuevos: {nuevos}")
+    logger.info(f"   Modificados: {modificados}")
+    logger.info(f"   Eliminados: {len(eliminados)}")
+    logger.info("=" * 60)
+    
+    return procesados
 
+
+# ============================================
+# VIGILANTE DE ARCHIVOS
+# ============================================
+
+class VigilanteHandler(FileSystemEventHandler):
+    """Manejador de eventos del sistema de archivos."""
+    
     def __init__(self, procesados):
         self.procesados = procesados
-        # Almacena temporalmente rutas de archivos movidos/renombrados
-        self._pendiente_renombrado = {}
-        # Control para evitar procesar el mismo archivo dos veces a la vez
         self._en_proceso = set()
-
-    def _gestionar_pdf(self, ruta):
-        """Lógica común para archivo nuevo o modificado."""
+        self._cooldown = {}  # Evitar procesamiento duplicado
+        logger.info("✅ Vigilante iniciado")
+    
+    def _debe_procesar(self, ruta):
+        """Verifica si el archivo debe ser procesado."""
         if not ruta.lower().endswith(EXTENSIONES):
-            return
-
+            return False
+        
         nombre = os.path.basename(ruta)
-
-        # Evitar procesar el mismo archivo dos veces simultáneamente
+        
+        # Evitar procesar el mismo archivo muy rápido
+        if nombre in self._cooldown:
+            if time.time() - self._cooldown[nombre] < 3:
+                return False
+        
+        # Evitar procesar archivos temporales
+        if nombre.startswith(('.', '~', 'tmp')):
+            return False
+        
+        return True
+    
+    def _procesar(self, ruta, es_creacion=False):
+        """Procesa un archivo."""
+        if not self._debe_procesar(ruta):
+            return
+        
+        nombre = os.path.basename(ruta)
+        
+        # Evitar procesamiento concurrente
         if nombre in self._en_proceso:
             return
+        
         self._en_proceso.add(nombre)
-
-        time.sleep(2)
-
+        self._cooldown[nombre] = time.time()
+        
+        # Pequeña pausa para asegurar que el archivo está completamente escrito
+        time.sleep(1)
+        
         if not os.path.exists(ruta):
             self._en_proceso.discard(nombre)
             return
-
-        fecha_actual = os.path.getmtime(ruta)
-        fecha_guardada = self.procesados.get(nombre)
-
-        if fecha_guardada is None:
-            exito = procesar_pdf(ruta, es_actualizacion=False)
-        elif abs(fecha_actual - fecha_guardada) > 1:
-            print(f"\n🔄 Cambio detectado en: {nombre}")
-            exito = procesar_pdf(ruta, es_actualizacion=True)
-        else:
-            print(f"⏭️  {nombre} sin cambios, omitiendo.")
+        
+        try:
+            fecha_actual = os.path.getmtime(ruta)
+            hash_actual = calcular_hash_archivo(ruta)
+            
+            registro = self.procesados.get(nombre)
+            
+            # Verificar si es nuevo o modificado
+            if not registro:
+                logger.info(f"📄 Nuevo archivo detectado: {nombre}")
+                exito = procesar_archivo(ruta, es_actualizacion=False)
+                
+                if exito:
+                    self.procesados[nombre] = {
+                        "fecha": fecha_actual,
+                        "hash": hash_actual
+                    }
+                    guardar_registro(self.procesados)
+                    
+            else:
+                fecha_guardada = registro.get("fecha", 0) if isinstance(registro, dict) else registro
+                hash_guardado = registro.get("hash", "") if isinstance(registro, dict) else ""
+                
+                if abs(fecha_actual - fecha_guardada) > 1 or hash_actual != hash_guardado:
+                    logger.info(f"🔄 Archivo modificado: {nombre}")
+                    exito = procesar_archivo(ruta, es_actualizacion=True)
+                    
+                    if exito:
+                        self.procesados[nombre] = {
+                            "fecha": fecha_actual,
+                            "hash": hash_actual
+                        }
+                        guardar_registro(self.procesados)
+                
+        except Exception as e:
+            logger.error(f"Error procesando {ruta}: {e}")
+        
+        finally:
             self._en_proceso.discard(nombre)
-            return
-
-        if exito:
-            self.procesados[nombre] = fecha_actual
-            guardar_registro(self.procesados)
-
-        self._en_proceso.discard(nombre)
-
+    
     def on_created(self, event):
         if event.is_directory:
             return
-        self._gestionar_pdf(event.src_path)
-
+        self._procesar(event.src_path, es_creacion=True)
+    
     def on_modified(self, event):
         if event.is_directory:
             return
-        self._gestionar_pdf(event.src_path)
-
+        self._procesar(event.src_path, es_creacion=False)
+    
     def on_deleted(self, event):
-        # Detección de borrado de carpeta con archivos dentro
         if event.is_directory:
-            carpeta_borrada = os.path.normpath(event.src_path)
-            afectados = [
-                nombre for nombre in list(self.procesados.keys())
-                if not any(
-                    os.path.exists(os.path.join(r, nombre))
-                    for r, _, _ in os.walk(CARPETA)
-                )
-            ]
-            if afectados:
-                print(f"\n🗑️  Carpeta eliminada: {os.path.basename(carpeta_borrada)}")
-                for nombre in afectados:
-                    try:
-                        borrar_documentos_pdf(nombre)
-                        del self.procesados[nombre]
-                        guardar_registro(self.procesados)
-                        print(f"   ✅ {nombre} eliminado de Supabase correctamente")
-                    except Exception as e:
-                        print(f"   ❌ Error eliminando {nombre}: {e}")
             return
-
+        
         if not event.src_path.lower().endswith(EXTENSIONES):
             return
-
+        
         nombre = os.path.basename(event.src_path)
-        if nombre not in self.procesados:
-            return
-
-        # Guardar temporalmente por si es un renombrado
-        self._pendiente_renombrado[nombre] = time.time()
-        time.sleep(1)
-
-        # Si sigue en pendientes después de 1 segundo es un borrado real
-        if nombre in self._pendiente_renombrado:
-            print(f"\n🗑️  Archivo eliminado: {nombre}")
-            try:
-                borrar_documentos_pdf(nombre)
+        
+        if nombre in self.procesados:
+            logger.info(f"🗑️ Archivo eliminado: {nombre}")
+            if eliminar_archivo_supabase(nombre):
                 del self.procesados[nombre]
                 guardar_registro(self.procesados)
-                print(f"   ✅ {nombre} eliminado de Supabase correctamente")
-            except Exception as e:
-                print(f"   ❌ Error eliminando {nombre} de Supabase: {e}")
-            del self._pendiente_renombrado[nombre]
 
-    def on_moved(self, event):
-        """Detecta renombrado de archivos (Windows lo trata como movido)."""
-        if event.is_directory:
-            return
 
-        src = event.src_path
-        dst = event.dest_path
-
-        if not src.lower().endswith(EXTENSIONES) and not dst.lower().endswith(EXTENSIONES):
-            return
-
-        nombre_antiguo = os.path.basename(src)
-        nombre_nuevo = os.path.basename(dst)
-
-        # Cancelar el borrado pendiente si lo había
-        if nombre_antiguo in self._pendiente_renombrado:
-            del self._pendiente_renombrado[nombre_antiguo]
-
-        if nombre_antiguo not in self.procesados:
-            self._gestionar_pdf(dst)
-            return
-
-        print(f"\n✏️  Archivo renombrado: {nombre_antiguo} → {nombre_nuevo}")
-
-        try:
-            url = f"{SUPABASE_URL}/rest/v1/documentos?nombre_pdf=eq.{nombre_antiguo}"
-            headers = {
-                "Content-Type": "application/json",
-                "apikey": SUPABASE_ANON_KEY,
-                "Authorization": f"Bearer {SUPABASE_ANON_KEY}"
-            }
-            res = requests.patch(url, json={"nombre_pdf": nombre_nuevo}, headers=headers)
-            if not res.ok:
-                raise Exception(res.text)
-
-            fecha = self.procesados.pop(nombre_antiguo)
-            self.procesados[nombre_nuevo] = fecha
-            guardar_registro(self.procesados)
-
-            print(f"   ✅ Nombre actualizado en Supabase correctamente")
-
-        except Exception as e:
-            print(f"   ❌ Error actualizando nombre en Supabase: {e}")
-
+# ============================================
+# MAIN
+# ============================================
 
 def main():
-    print("🤖 Vigilante de archivos — Couce Consulting")
-    print(f"📁 Carpeta vigilada: {CARPETA}")
-
-    if not os.path.exists(CARPETA):
-        print(f"❌ La carpeta no existe: {CARPETA}")
+    """Función principal."""
+    print("=" * 70)
+    print("🚀 VIGILANTE DEFINITIVO - COUCE CONSULTING")
+    print("=" * 70)
+    print(f"\n📁 Estructura de carpetas:")
+    print(f"   📂 Originales:  {CARPETA_ORIGINALES}")
+    print(f"   📂 Borradores:  {CARPETA_BORRADORES}")
+    print(f"   📂 Histórico:   {CARPETA_HISTORICO}")
+    print(f"\n📊 Estado:        {ESTADO_GENERAL}")
+    print(f"📝 Log:           {LOG_FILE}")
+    print("\n" + "=" * 70)
+    print("\n💡 Funcionalidades:")
+    print("   ✅ Detecta automáticamente archivos NUEVOS")
+    print("   ✅ Detecta automáticamente archivos MODIFICADOS")
+    print("   ✅ Detecta automáticamente archivos ELIMINADOS")
+    print("   ✅ Sube archivos a Supabase con embeddings")
+    print("   ✅ Elimina archivos de Supabase cuando se borran")
+    print("   ✅ Mantiene historial de versiones")
+    print("=" * 70)
+    
+    # Verificar carpetas
+    if not os.path.exists(RAIZ):
+        logger.error(f"❌ La carpeta no existe: {RAIZ}")
         return
-
-    # Cola de pendientes: procesar archivos añadidos mientras el script estaba apagado
-    procesados = cargar_registro()
-    revisar_pendientes(procesados)
-
-    print("\n⏳ Esperando nuevos archivos o cambios...\n")
-
-    manejador = ManejadorPDF(procesados)
-    observador = Observer()
-    observador.schedule(manejador, CARPETA, recursive=True)
-    observador.start()
-
-    print(f"✅ Vigilando activamente: {CARPETA}")
-
-    # Comprobación periódica cada 10 segundos para detectar borrados que watchdog no captura
-    ultimo_chequeo = time.time()
-
+    
+    # Sincronización inicial
+    procesados = sincronizar_inicial()
+    
+    # Iniciar vigilante
+    logger.info("\n⏳ Iniciando vigilancia...\n")
+    
+    handler = VigilanteHandler(procesados)
+    observer = Observer()
+    
+    # Vigilar carpetas
+    observer.schedule(handler, CARPETA_ORIGINALES, recursive=True)
+    observer.schedule(handler, CARPETA_BORRADORES, recursive=True)
+    observer.start()
+    
+    logger.info(f"✅ Vigilando activamente:")
+    logger.info(f"   • {CARPETA_ORIGINALES}")
+    logger.info(f"   • {CARPETA_BORRADORES}")
+    logger.info("\n💡 Presiona Ctrl+C para detener\n")
+    
     try:
         while True:
             time.sleep(1)
-            # Cada 10 mins revisar si hay archivos del registro que ya no existen
-            if time.time() - ultimo_chequeo >= 600:
-                ultimo_chequeo = time.time()
-                todos_los_archivos = set()
-                for carpeta_actual, _, archivos in os.walk(CARPETA):
-                    for archivo in archivos:
-                        if archivo.lower().endswith(EXTENSIONES):
-                            todos_los_archivos.add(archivo)
-                borrados = [n for n in list(procesados.keys()) if n not in todos_los_archivos]
-                for nombre in borrados:
-                    print(f"\n🗑️  Archivo desaparecido detectado: {nombre}")
-                    try:
-                        borrar_documentos_pdf(nombre)
-                        del procesados[nombre]
-                        guardar_registro(procesados)
-                        print(f"   ✅ {nombre} eliminado de Supabase correctamente")
-                    except Exception as e:
-                        print(f"   ❌ Error eliminando {nombre}: {e}")
     except KeyboardInterrupt:
-        print("\n⛔ Vigilante detenido.")
-        observador.stop()
-
-    observador.join()
+        logger.info("\n\n⛔ Vigilante detenido por el usuario.")
+        observer.stop()
+    
+    observer.join()
+    logger.info("✅ Programa finalizado correctamente")
 
 
 if __name__ == "__main__":
